@@ -1,6 +1,6 @@
 [plugin]
 enabled = true
-config_version = "0.6.0"
+config_version = "0.6.1"
 
 [dsh]
 # dsh 可执行命令（装好后通常是 dsh；Windows 全局装可能在 C:\nodejs\dsh.cmd）

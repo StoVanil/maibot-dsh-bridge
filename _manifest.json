@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "ji-or-ji.maibot-dsh-bridge",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "name": "麦麦×dsh 桥",
   "description": "把 DeepSeek Harness (dsh) 接入麦麦：用 /dsh 命令或 dsh_run 工具把较重的任务外包给 dsh 在服务器上执行，过程以合并转发回传。权限支持白/黑名单双模式，默认白名单。",
   "author": { "name": "ji-or-ji", "url": "https://github.com/ji-or-ji" },
@@ -12,8 +12,8 @@
     "documentation": "https://github.com/ji-or-ji/maibot-dsh-bridge/blob/main/README.md",
     "issues": "https://github.com/ji-or-ji/maibot-dsh-bridge/issues"
   },
-  "host_application": { "min_version": "1.0.0", "max_version": "1.99.99" },
-  "sdk": { "min_version": "2.0.0", "max_version": "2.99.99" },
+  "host_application": { "min_version": "1.2.0", "max_version": "1.2.99" },
+  "sdk": { "min_version": "2.0.0", "max_version": "2.8.99" },
   "dependencies": [],
   "capabilities": ["send.text", "send.forward", "api.call", "api.get", "maisaka.context.append"],
   "i18n": { "default_locale": "zh-CN", "supported_locales": ["zh-CN"] }
