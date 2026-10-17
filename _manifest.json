@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "ji-or-ji.maibot-dsh-bridge",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "name": "麦麦×dsh 桥",
-  "description": "把 DeepSeek Harness (dsh) 接入麦麦：用 /dsh 命令或 dsh_run 工具把较重的任务外包给 dsh 在服务器上执行，过程以合并转发回传。",
+  "description": "把 DeepSeek Harness (dsh) 接入麦麦：用 /dsh 命令或 dsh_run 工具把较重的任务外包给 dsh 在服务器上执行，过程以合并转发回传。权限支持白/黑名单双模式，默认白名单。",
   "author": { "name": "ji-or-ji", "url": "https://github.com/ji-or-ji" },
   "license": "MIT",
   "urls": {

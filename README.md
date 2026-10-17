@@ -53,7 +53,7 @@
 2. **给密钥**：设置环境变量 `DEEPSEEK_API_KEY`（**推荐**，插件自动读取）；也可填进 `config.toml` 的 `[dsh].api_key`（不推荐，勿提交）。
 3. **启用**：把 `config.toml.example` 复制为 `config.toml`，将 `[plugin].enabled` 设为 `true`，重载麦麦。
 
-可选：在 `[permission].allowed_users` 填入允许使用 `/dsh` 的用户 ID（逗号分隔）。**留空表示拒绝所有人**（fail-closed）；若想开放，需显式列出。**该白名单同时约束 `/dsh` 命令、`dsh_run` 工具与 `schedule_task/update/cancel` 三个工具**——Planner 自主调工具时，取的是触发消息的用户身份。若把 `[permission].enabled` 设为 `false`，等同于**放开给所有人**（不推荐）。`dsh_run` 由麦麦的 Planner 决定调用。
+可选：`[permission].mode` 选择 `whitelist`（默认，仅名单内可用）或 `blacklist`（名单内不可用、其余放行）。白名单模式在 `allowed_users` / `allowed_groups` 填 ID，**留空表示拒绝所有人**（fail-closed）；黑名单模式在 `blocked_users` / `blocked_groups` 填要拦的 ID。群聊里若取不到发言人 ID，用群 ID 兜底。名单同时约束 `/dsh` 命令、`dsh_run` 工具与 `schedule_task/update/cancel` 三个工具。把 `[permission].enabled` 设为 `false` 等同于**放开给所有人**（不推荐）。`dsh_run` 由麦麦的 Planner 决定调用。
 
 > ⚠️ **隐私提示**：被外包的任务文本（以及 dsh 执行时读到的上下文）会经 **dsh 发往 DeepSeek 的推理服务**。群内内容敏感时，请启用前知晓。
 
@@ -89,8 +89,12 @@ dsh 的能力按「plugin bundle」叠进 profile（改 `$DSH_HOME/profiles/<名
 | `[dsh].deliver_max_files` | 单次任务最多打包发送的交付物数量（默认 8） |
 | `[dsh].allow_self_schedule` | 是否允许 dsh 经 schedule-requests 自建定时任务（默认开；关则禁止） |
 | `[dsh].display_mode` | `forward`（合并转发）或 `text` |
-| `[permission].allowed_users` | 有权使用 `/dsh` 的用户，留空=拒绝所有人 |
-| `[permission].enforce_tools` | 是否对 `dsh_run` / `schedule_*` 工具也施加白名单（默认开；关则工具面放开，风险自负） |
+| `[permission].mode` | `whitelist`（默认，仅名单内可用）或 `blacklist`（名单内不可用，其余放行） |
+| `[permission].allowed_users` | 白名单用户 ID，留空且白名单模式=拒绝所有人 |
+| `[permission].allowed_groups` | 白名单群 ID，群聊里取不到发言人 ID 时兜底 |
+| `[permission].blocked_users` | 黑名单用户 ID（仅 `blacklist` 模式生效） |
+| `[permission].blocked_groups` | 黑名单群 ID（仅 `blacklist` 模式生效） |
+| `[permission].enforce_tools` | 是否对 `dsh_run` / `schedule_*` 工具也施加名单（默认开；关则工具面放开，风险自负） |
 
 ## 安全边界
 
@@ -106,7 +110,7 @@ dsh 的能力按「plugin bundle」叠进 profile（改 `$DSH_HOME/profiles/<名
   - **注意**：`_spawn` 在 Windows 下经 `cmd.exe /c` 启动，`[dsh].command` 与 `[dsh].extra_args` 实质会被 shell 解析——**这两项属管理员可信配置，不得由聊天内容产生**。
   - **平台**：Windows 与类 Unix 均已支持。Windows 经 `cmd.exe /c` 启动、以 `taskkill /T` 终止整棵进程树；类 Unix 经 `/bin/sh -c` 启动、子进程独立进程组，终止时用 `killpg` 整体干掉。
   - 说明：最初只在 Windows 上验证过（作者手边没有可跑 WSL / Docker / Linux 的环境），所以起步阶段**没打算适配 Linux**；后来调研发现有不少用户跑在 Linux 上，于是补上了跨平台支持。**非 Windows 环境请自行评估适配性。**
-- **权限**：`/dsh`、`dsh_run`、`schedule_*` 均受 `[permission].allowed_users` 约束（工具身份取自触发消息的用户）。白名单留空 = 拒绝所有人。若不需要对工具收紧，可将 `[permission].enforce_tools` 设为 `false`（工具面放开，风险自负）。
+- **权限**：`/dsh`、`dsh_run`、`schedule_*` 均受 `[permission]` 约束。`mode = "whitelist"`（默认）只放行 `allowed_users` / `allowed_groups`；`mode = "blacklist"` 拦截 `blocked_users` / `blocked_groups`，其余放行。用户 ID 与群 ID 会先归一化为纯数字再比较，兼容 `qq:` 前缀。白名单留空 = 拒绝所有人。若不需要对工具收紧，可将 `[permission].enforce_tools` 设为 `false`（工具面放开，风险自负）。
 - **dsh 自建任务**：`schedule-requests` 通道可用 `[dsh].allow_self_schedule` 关掉（默认开）。
 - **文件写入**：仅写插件数据目录 `ctx.paths.data_dir`；每个聊天流的工作区名做**白名单字符清洗**（仅 `A-Za-z0-9_-`），杜绝 `..` 越位；`schedule-requests/` 内部请求消费后移入 `.done/`。
 - **交付物**：来自 dsh 通过 `present` 声明的文件，逐条校验为「**本流工作区内存在的普通文件**」（resolve 后做 containment）后才发送；`schedule-requests` 等内部路径排除。

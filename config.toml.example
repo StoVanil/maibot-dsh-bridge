@@ -1,6 +1,6 @@
 [plugin]
 enabled = true
-config_version = "0.4.1"
+config_version = "0.5.0"
 
 [dsh]
 # dsh 可执行命令（装好后通常是 dsh；Windows 全局装可能在 C:\nodejs\dsh.cmd）
@@ -39,7 +39,14 @@ api_key = ""
 
 [permission]
 enabled = true
-# 允许使用 /dsh 的用户 ID，逗号分隔；留空且启用则拒绝所有人（fail-closed）
+# 名单模式：whitelist=仅名单内可用（默认，安全）；blacklist=名单内不可用、其余放行
+mode = "whitelist"
+# 白名单用户 ID，逗号分隔；白名单模式下留空则拒绝所有人（fail-closed）
 allowed_users = ""
-# 是否对 dsh_run / schedule_* 工具也施加白名单（关=工具面放开，风险自负）
+# 白名单群 ID，逗号分隔；群聊里取不到发言人 ID 时作为兜底
+allowed_groups = ""
+# 黑名单用户 / 群 ID，逗号分隔；仅 mode = "blacklist" 时生效
+blocked_users = ""
+blocked_groups = ""
+# 是否对 dsh_run / schedule_* 工具也施加名单（关=工具面放开，风险自负）
 enforce_tools = true

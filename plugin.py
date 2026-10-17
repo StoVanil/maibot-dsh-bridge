@@ -38,7 +38,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
@@ -100,11 +100,21 @@ class PermissionConfig(PluginConfigBase):
     __ui_icon__ = "shield"
     __ui_order__ = 2
 
-    enabled: bool = Field(default=True, description="是否启用用户白名单")
-    allowed_users: str = Field(default="", description="允许的用户 ID，逗号分隔；留空且启用则拒绝所有人")
+    enabled: bool = Field(default=True, description="是否启用权限名单")
+    mode: Literal["whitelist", "blacklist"] = Field(
+        default="whitelist",
+        description="名单模式：whitelist=仅名单内可用；blacklist=名单内不可用、其余放行",
+    )
+    allowed_users: str = Field(default="", description="白名单用户 ID，逗号分隔；白名单模式下留空且启用则拒绝所有人（fail-closed）")
+    allowed_groups: str = Field(
+        default="",
+        description="白名单群 ID，逗号分隔；群聊里取不到发言人 ID 时作为兜底",
+    )
+    blocked_users: str = Field(default="", description="黑名单用户 ID，逗号分隔；黑名单模式下命中即拒绝")
+    blocked_groups: str = Field(default="", description="黑名单群 ID，逗号分隔；黑名单模式下命中即拒绝")
     enforce_tools: bool = Field(
         default=True,
-        description="是否对 dsh_run / schedule_* 工具也施加白名单（默认开=安全；关=工具面放开，风险自负）",
+        description="是否对 dsh_run / schedule_* 工具也施加名单（默认开=安全；关=工具面放开，风险自负）",
     )
 
 
@@ -483,13 +493,32 @@ class DshBridgePlugin(MaiBotPlugin):
             user_id = user_id.get("user_id") or user_id.get("id") or ""
         return str(user_id).strip()
 
+    @staticmethod
+    def _only_digits(value: Any) -> str:
+        return re.sub(r"\D", "", str(value or ""))
+
     def _is_allowed(self, kwargs: dict[str, Any]) -> bool:
         perm = self.config.permission
         if not perm.enabled:
             return True
-        user_id = self._extract_user_id(kwargs)
-        allowed = {u.strip() for u in perm.allowed_users.split(",") if u.strip()}
-        return bool(user_id and user_id in allowed)
+        user_key = self._only_digits(self._extract_user_id(kwargs))
+        group_key = self._only_digits(kwargs.get("group_id"))
+
+        if perm.mode == "blacklist":
+            blocked_users = {self._only_digits(u) for u in perm.blocked_users.split(",") if u.strip()}
+            blocked_groups = {self._only_digits(g) for g in perm.blocked_groups.split(",") if g.strip()}
+            if user_key and user_key in blocked_users:
+                return False
+            if group_key and group_key in blocked_groups:
+                return False
+            return True
+
+        allowed_users = {self._only_digits(u) for u in perm.allowed_users.split(",") if u.strip()}
+        allowed_groups = {self._only_digits(g) for g in perm.allowed_groups.split(",") if g.strip()}
+        if user_key and user_key in allowed_users:
+            return True
+        # 群聊里 chat_stream 未必带发言人 ID，允许在指定群内放行
+        return bool(group_key and group_key in allowed_groups)
 
     def _clamp_timeout(self, value: Optional[int]) -> int:
         conf = self.config.dsh
