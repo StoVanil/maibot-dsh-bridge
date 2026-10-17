@@ -83,6 +83,14 @@ class DshConfig(PluginConfigBase):
     deliver_max_files: int = Field(default=8, description="单次任务最多打包发送的交付物文件数", ge=1, le=50)
     api_key_env: str = Field(default="DEEPSEEK_API_KEY", description="存放 API Key 的环境变量名")
     api_key: str = Field(default="", description="DeepSeek API Key（明文，留空则用系统环境变量；勿分享本文件）")
+    permission_mode: Literal["workspace-write", "read-only", "danger-full-access"] = Field(
+        default="danger-full-access",
+        description=(
+            "dsh 沙箱权限模式。默认 danger-full-access：git clone / npm 等需要子进程管道的命令在 "
+            "workspace-write 下会被 Windows ACL 沙箱拒绝。要更严可改为 workspace-write 或 read-only，"
+            "但需接受相应命令失败。"
+        ),
+    )
     context_inject_chars: int = Field(
         default=600,
         description="回灌进麦麦上下文的结果摘要最大字符数（越小越省上下文，超出部分截断）",
@@ -625,6 +633,7 @@ class DshBridgePlugin(MaiBotPlugin):
         api_key = conf.api_key.strip() or os.environ.get(conf.api_key_env, "").strip()
         if api_key:
             env[conf.api_key_env] = api_key
+        env["DSH_PERMISSION_MODE"] = conf.permission_mode
 
         state = _RunState()
         try:

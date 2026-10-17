@@ -89,6 +89,7 @@ dsh 的能力按「plugin bundle」叠进 profile（改 `$DSH_HOME/profiles/<名
 | `[dsh].deliver_max_files` | 单次任务最多打包发送的交付物数量（默认 8） |
 | `[dsh].allow_self_schedule` | 是否允许 dsh 经 schedule-requests 自建定时任务（默认开；关则禁止） |
 | `[dsh].display_mode` | `forward`（合并转发）或 `text` |
+| `[dsh].permission_mode` | dsh 沙箱模式：`danger-full-access`（默认，git/npm 可用）/ `workspace-write` / `read-only` |
 | `[permission].mode` | `whitelist`（默认，仅名单内可用）或 `blacklist`（名单内不可用，其余放行） |
 | `[permission].allowed_users` | 白名单用户 ID，留空且白名单模式=拒绝所有人 |
 | `[permission].allowed_groups` | 白名单群 ID，群聊里取不到发言人 ID 时兜底 |
@@ -107,6 +108,7 @@ dsh 的能力按「plugin bundle」叠进 profile（改 `$DSH_HOME/profiles/<名
 ### 关于子进程、文件与网络（供审查参考）
 
 - **子进程**：本插件以子进程方式调用 `dsh`（`subprocess`），这是它的核心用途——把任务交给 dsh 引擎执行。命令取自配置项 `[dsh].command`（默认 `dsh`），**不使用 `shell=True`、不拼接用户输入成命令**。
+  - **沙箱模式**：桥默认给 dsh 注入 `DSH_PERMISSION_MODE=danger-full-access`。原因：Windows 上 dsh 的 `workspace-write` 使用 ACL 受限令牌，`git clone` 会因 `git-remote-https` 无法创建命名管道而失败（`cannot create standard input pipe ... Permission denied`）。任务已由 `[permission]` 名单限制在授权用户/群内，工作目录也按聊天流隔离；若需要更严边界，可把 `[dsh].permission_mode` 改为 `workspace-write`，代价是 git / npm 等命令不可用。
   - **注意**：`_spawn` 在 Windows 下经 `cmd.exe /c` 启动，`[dsh].command` 与 `[dsh].extra_args` 实质会被 shell 解析——**这两项属管理员可信配置，不得由聊天内容产生**。
   - **平台**：Windows 与类 Unix 均已支持。Windows 经 `cmd.exe /c` 启动、以 `taskkill /T` 终止整棵进程树；类 Unix 经 `/bin/sh -c` 启动、子进程独立进程组，终止时用 `killpg` 整体干掉。
   - 说明：最初只在 Windows 上验证过（作者手边没有可跑 WSL / Docker / Linux 的环境），所以起步阶段**没打算适配 Linux**；后来调研发现有不少用户跑在 Linux 上，于是补上了跨平台支持。**非 Windows 环境请自行评估适配性。**
