@@ -604,6 +604,53 @@ async def main():
     finally:
         p.ctx.api.NAPCAT = saved
 
+    print("\n===== 25) 权限审批：未授权 → 申请 → 批准 → 可用 → 过期/拒绝 =====")
+    outsider = "2000000001"
+    approver = UID  # 白名单用户默认就是审批人
+    p._remember_stream(approver, STREAM)
+    p.ctx.send.clear()
+    r = await p.handle_dsh(
+        stream_id="outsider-stream", user_id=outsider, group_id="",
+        matched_groups={"body": "帮我查下服务器时间"}, text="/dsh 帮我查下服务器时间",
+    )
+    assert r[2] is True, r
+    joined = p.ctx.send.joined()
+    print("[申请人看到]", joined[:160].replace("\n", " / "))
+    assert "申请单" in joined, f"没生成申请：{joined}"
+    assert p._approval_reqs, "没有申请单记录"
+    rid = sorted(p._approval_reqs)[0]
+    assert any("权限申请" in t for _, t in p.ctx.send.sent), "审批人没收到申请"
+    p.ctx.send.clear()
+    r2 = await p.handle_dsh(
+        stream_id=STREAM, user_id=approver, group_id="",
+        matched_groups={"body": "批准 " + rid}, text="/dsh 批准",
+    )
+    assert r2[2] is True, r2
+    print("[审批人]", p.ctx.send.joined()[:160].replace("\n", " / "))
+    assert rid not in p._approval_reqs, "批准后申请单没清"
+    assert p._grant_valid(outsider), "批准后没授权"
+    assert p._effective_allowed({"user_id": outsider}), "批准后仍不放行"
+    # 过期即失效
+    p._grants[outsider]["expires_at"] = time.time() - 1
+    assert not p._effective_allowed({"user_id": outsider}), "过期后还放行"
+    # 拒绝流程
+    p.ctx.send.clear()
+    await p.handle_dsh(stream_id="outsider-stream", user_id=outsider, group_id="",
+                       matched_groups={"body": "再试一次"}, text="/dsh 再试一次")
+    rid2 = sorted(p._approval_reqs)[0]
+    p.ctx.send.clear()
+    await p.handle_dsh(stream_id=STREAM, user_id=approver, group_id="",
+                       matched_groups={"body": "拒绝 " + rid2}, text="/dsh 拒绝")
+    print("[拒绝]", p.ctx.send.joined()[:120].replace("\n", " / "))
+    assert rid2 not in p._approval_reqs, "拒绝后申请单没清"
+    assert not p._grant_valid(outsider), "拒绝后居然有授权"
+    # 审批列表
+    p.ctx.send.clear()
+    await p.handle_dsh(stream_id=STREAM, user_id=approver, group_id="",
+                       matched_groups={"body": "审批"}, text="/dsh 审批")
+    assert "待审批" in p.ctx.send.joined(), p.ctx.send.joined()
+    print("[审批列表]", p.ctx.send.joined()[:160].replace("\n", " / "))
+
     print("\n===== 全部通过 =====")
     srv.shutdown()
 

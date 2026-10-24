@@ -197,6 +197,26 @@ class PermissionConfig(PluginConfigBase):
         default=True,
         description="是否对 dsh_run / schedule_* 工具也施加名单（默认开=安全；关=工具面放开，风险自负）",
     )
+    approval_enabled: bool = Field(
+        default=True,
+        description=(
+            "【审批制】未授权的人发 /dsh 时先发申请单给审批人，不直接拒绝；"
+            "审批人 /dsh 批准 <编号> [小时] 后对方就能用，/dsh 拒绝 <编号> 驳回"
+        ),
+    )
+    approvers: str = Field(
+        default="",
+        description="审批人 QQ，逗号分隔；留空=用白名单里的人。审批人可发 批准/拒绝/审批/撤销 子指令",
+    )
+    approval_hours: int = Field(
+        default=24,
+        description="批准后的授权有效期（小时）；填 0 = 永久加入白名单",
+        ge=0,
+        le=8760,
+    )
+    approval_ttl_minutes: int = Field(
+        default=30, description="权限申请单的有效期（分钟），过期作废", ge=1, le=1440
+    )
 
 
 class TopicConfig(PluginConfigBase):
@@ -343,6 +363,17 @@ class DshBridgePlugin(MaiBotPlugin):
         self._run_task_text = ""
         self._run_budget = 0
         self._last_run: dict[str, Any] = {}
+        self._grants: dict[str, Any] = {}
+        self._approval_reqs: dict[str, Any] = {}
+        self._user_streams: dict[str, str] = {}
+        self._approval_seq = 0
+        self._approval_notified: dict[str, set[str]] = {}
+        self._load_grants()
+        self._load_approvals()
+        self._load_user_streams()
+        self._approval_seq = max(
+            [int(re.sub(r"\D", "", k) or 0) for k in self._approval_reqs] + [0]
+        )
         self._load_exp()
         self._scheduler_running = True
         self._load_tasks()
@@ -353,7 +384,7 @@ class DshBridgePlugin(MaiBotPlugin):
             "麦麦×大肥鱼 桥插件已加载 (command=%s, budget=%s, home=%s, display=%s)",
             self.config.dsh.command,
             "不限时" if int(self.config.dsh.timeout_default) <= 0 else f"{self.config.dsh.timeout_default}s",
-            str(self.config.dsh.dsh_home or "").strip() or "默认(~/.大肥鱼)",
+            str(self.config.dsh.dsh_home or "").strip() or "默认(~/.dsh)",
             self.config.dsh.display_mode,
         )
 
@@ -733,7 +764,7 @@ class DshBridgePlugin(MaiBotPlugin):
         stream_id = str(kwargs.get("stream_id") or "")
         if not self._topic_mode_for(stream_id, str(kwargs.get("group_id") or "")):
             return {"success": False, "error": "话题实验功能只在私聊可用。"}
-        if self.config.permission.enforce_tools and not self._is_allowed(kwargs):
+        if self.config.permission.enforce_tools and not self._effective_allowed(kwargs):
             return {"success": False, "error": "无权限使用这个工具。"}
         if stream_id:
             self._last_chat_id = stream_id
@@ -874,6 +905,10 @@ class DshBridgePlugin(MaiBotPlugin):
         while self._scheduler_running:
             try:
                 await self._expire_pending()
+                try:
+                    self._prune_approvals()
+                except Exception:  # noqa: BLE001
+                    self.ctx.logger.warning("清理过期授权失败", exc_info=True)
                 now = time.time()
                 # 实验功能到期自动关闭
                 expired_text = self._expire_agent_if_needed()
@@ -1348,6 +1383,10 @@ class DshBridgePlugin(MaiBotPlugin):
         if not stream_id:
             return None
         text = self._msg_plain_text(message)
+        self._remember_stream(self._msg_user_id(message), stream_id)
+        _ukey = self._only_digits(self._msg_user_id(message))
+        if _ukey and _ukey in self._approver_ids():
+            await self._flush_pending_to(_ukey, stream_id)
         allowed = self._is_allowed(
             {"user_id": self._msg_user_id(message), "group_id": self._msg_group_id(message)}
         )
@@ -1948,6 +1987,332 @@ class DshBridgePlugin(MaiBotPlugin):
             return True
         # 群聊里 chat_stream 未必带发言人 ID，允许在指定群内放行
         return bool(group_key and group_key in allowed_groups)
+
+    # ── 权限审批（未授权的人发 /dsh → 审批人批准后可用）──────────────
+
+    def _grants_file(self) -> Path:
+        return Path(self.ctx.paths.data_dir) / "grants.json"
+
+    def _approvals_file(self) -> Path:
+        return Path(self.ctx.paths.data_dir) / "approvals_pending.json"
+
+    def _user_streams_file(self) -> Path:
+        return Path(self.ctx.paths.data_dir) / "user_streams.json"
+
+    def _load_json_dict(self, fp: Path) -> dict[str, Any]:
+        try:
+            if fp.is_file():
+                data = json.loads(fp.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception:  # noqa: BLE001
+            self.ctx.logger.warning("读取 %s 失败", fp, exc_info=True)
+        return {}
+
+    def _save_json_dict(self, fp: Path, data: dict[str, Any]) -> None:
+        try:
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            fp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            self.ctx.logger.warning("写入 %s 失败", fp, exc_info=True)
+
+    def _load_grants(self) -> None:
+        raw = self._load_json_dict(self._grants_file())
+        now = time.time()
+        self._grants = {}
+        for qq, info in raw.items():
+            if not isinstance(info, dict):
+                continue
+            exp = float(info.get("expires_at") or 0)
+            if exp and exp <= now:
+                continue  # 已过期，丢掉
+            self._grants[str(qq)] = info
+
+    def _save_grants(self) -> None:
+        self._save_json_dict(self._grants_file(), self._grants)
+
+    def _load_approvals(self) -> None:
+        raw = self._load_json_dict(self._approvals_file())
+        now = time.time()
+        self._approval_reqs = {}
+        for rid, info in raw.items():
+            if not isinstance(info, dict):
+                continue
+            if float(info.get("expires_at") or 0) <= now:
+                continue
+            self._approval_reqs[str(rid)] = info
+
+    def _save_approvals(self) -> None:
+        self._save_json_dict(self._approvals_file(), self._approval_reqs)
+
+    def _load_user_streams(self) -> None:
+        self._user_streams = {
+            str(k): str(v) for k, v in self._load_json_dict(self._user_streams_file()).items()
+        }
+
+    def _save_user_streams(self) -> None:
+        self._save_json_dict(self._user_streams_file(), self._user_streams)
+
+    def _approver_ids(self) -> set[str]:
+        perm = self.config.permission
+        raw = (perm.approvers or "").strip() or (perm.allowed_users or "")
+        return {self._only_digits(x) for x in raw.split(",") if self._only_digits(x)}
+
+    def _is_approver(self, kwargs: dict[str, Any]) -> bool:
+        user = self._only_digits(self._extract_user_id(kwargs))
+        return bool(user and user in self._approver_ids())
+
+    def _grant_valid(self, user_key: str) -> bool:
+        if not user_key:
+            return False
+        info = self._grants.get(user_key)
+        if not info:
+            return False
+        exp = float(info.get("expires_at") or 0)
+        if exp and exp <= time.time():
+            self._grants.pop(user_key, None)
+            self._save_grants()
+            return False
+        return True
+
+    def _effective_allowed(self, kwargs: dict[str, Any]) -> bool:
+        """名单放行 或 有未过期的审批授权。"""
+        if self._is_allowed(kwargs):
+            return True
+        return self._grant_valid(self._only_digits(self._extract_user_id(kwargs)))
+
+    def _remember_stream(self, user_id: str, stream_id: str) -> None:
+        """记住某人的私聊 stream，审批通知才有地方发。"""
+        user = self._only_digits(user_id)
+        if not user or not stream_id:
+            return
+        if self._user_streams.get(user) == stream_id:
+            return
+        self._user_streams[user] = stream_id
+        self._save_user_streams()
+
+    def _approval_text(self, req: dict[str, Any]) -> str:
+        nick = str(req.get("nick") or "").strip()
+        who = f"{nick}（{req.get('user_id')}）" if nick else str(req.get("user_id"))
+        task = str(req.get("task") or "").strip().replace("\n", " ")[:60]
+        return (
+            "🔐 权限申请 " + str(req.get("rid")) + "：\n"
+            + who + " 想用 /dsh：" + (task or "（没写内容）") + "\n"
+            + "批准发 /dsh 批准 " + str(req.get("rid")) + " [小时]（省略=默认 " + str(self.config.permission.approval_hours) + " 小时，0=永久）\n"
+            + "拒绝发 /dsh 拒绝 " + str(req.get("rid"))
+        )
+
+    async def _notify_approvers(self, text: str, skip: str = "", rid: str = "") -> int:
+        """给审批人发通知；返回成功发出的条数。"""
+        sent = 0
+        for qq in self._approver_ids():
+            if qq == skip:
+                continue
+            stream = self._user_streams.get(qq)
+            if not stream:
+                continue
+            try:
+                await self.ctx.send.text(text, stream)
+                sent += 1
+                if rid:
+                    self._approval_notified.setdefault(rid, set()).add(qq)
+            except Exception:  # noqa: BLE001
+                self.ctx.logger.warning("通知审批人 %s 失败", qq, exc_info=True)
+        if not sent:
+            self.ctx.logger.warning("没有可用的审批人私聊，申请先挂着等他们下次说话")
+        return sent
+
+    async def _flush_pending_to(self, user: str, stream: str) -> None:
+        """审批人刚说过话：把还没发给他的申请单补发过去。"""
+        if not stream or not user or user not in self._approver_ids():
+            return
+        for rid, req in list(self._approval_reqs.items()):
+            sent_to = self._approval_notified.setdefault(rid, set())
+            if user in sent_to:
+                continue
+            try:
+                await self.ctx.send.text(self._approval_text(req), stream)
+                sent_to.add(user)
+            except Exception:  # noqa: BLE001
+                self.ctx.logger.warning("补发申请单失败", exc_info=True)
+
+    async def _create_approval_request(
+        self, kwargs: dict[str, Any], task: str
+    ) -> str:
+        """未授权的人发 /dsh：生成（或复用）申请单，返回给申请人看的话。"""
+        perm = self.config.permission
+        user_key = self._only_digits(self._extract_user_id(kwargs))
+        stream_id = str(kwargs.get("stream_id") or "")
+        now = time.time()
+        if user_key:
+            self._remember_stream(user_key, stream_id)
+        # 同一人重复发：复用还没过期的申请单，避免刷屏
+        for rid, info in self._approval_reqs.items():
+            if self._only_digits(info.get("user_id")) == user_key and float(info.get("expires_at") or 0) > now:
+                info["task"] = task[:200]
+                self._save_approvals()
+                await self._notify_approvers(self._approval_text(info), skip=user_key, rid=rid)
+                return (
+                    "⏳ 你还有一张申请单 " + str(rid) + " 在审批人那儿挂着呢～"
+                    "（批准后就能用 /dsh 啦）"
+                )
+        self._approval_seq += 1
+        rid = "A" + str(self._approval_seq)
+        nick = str(kwargs.get("sender_nickname") or kwargs.get("nickname") or "").strip()
+        req = {
+            "rid": rid,
+            "user_id": user_key or str(self._extract_user_id(kwargs)),
+            "nick": nick,
+            "stream_id": stream_id,
+            "group_id": str(kwargs.get("group_id") or ""),
+            "task": task[:200],
+            "created_at": now,
+            "expires_at": now + int(perm.approval_ttl_minutes) * 60,
+        }
+        self._approval_reqs[rid] = req
+        self._save_approvals()
+        await self._notify_approvers(self._approval_text(req), skip=user_key, rid=rid)
+        if self._is_approver(kwargs):
+            return "🔐 你自己就是审批人哦～要用 /dsh 先把权限加进白名单吧（或 /dsh 批准 " + rid + "）"
+        return (
+            "🔐 你还没有用 /dsh 的权限，墨把申请单 " + rid + " 发给审批人啦～"
+            "批准后就能用（申请单 " + str(perm.approval_ttl_minutes) + " 分钟内有效）"
+        )
+
+    # ── 审批子指令（只有审批人能用）──────────────────────────────
+
+    _APPROVE_RE = re.compile(r"^(?:批准|通过|同意|approve)\s+(?:A)?#?\s*(\d+)(?:\s+(\d+))?$", re.IGNORECASE)
+    _REJECT_RE = re.compile(r"^(?:拒绝|驳回|reject)\s+(?:A)?#?\s*(\d+)(?:\s*(.*))?$", re.IGNORECASE)
+    _REVOKE_RE = re.compile(r"^(?:撤销|收回|revoke)\s+(\d{5,})$", re.IGNORECASE)
+    _APPROVAL_LIST_RE = re.compile(
+        r"^(?:审批|申请|待审批|pending|授权列表|授权|权限列表|grants?)$", re.IGNORECASE
+    )
+
+    async def _dispatch_approval_command(
+        self, body: str, stream_id: str, kwargs: dict[str, Any]
+    ) -> Optional[str]:
+        """审批相关子指令；不是审批指令返回 None。"""
+        raw = (body or "").strip()
+        if not raw:
+            return None
+        perm = self.config.permission
+        has = (
+            self._APPROVE_RE.match(raw)
+            or self._REJECT_RE.match(raw)
+            or self._REVOKE_RE.match(raw)
+            or self._APPROVAL_LIST_RE.match(raw)
+        )
+        if not has:
+            return None
+        if not perm.approval_enabled:
+            return "审批功能在插件配置里关着（permission.approval_enabled=false）哦"
+        if not self._is_approver(kwargs):
+            return "唔…审批这件事只有审批人能做哦 (｡•́︿•̀｡)"
+        m = self._APPROVE_RE.match(raw)
+        if m:
+            rid = "A" + m.group(1)
+            req = self._approval_reqs.pop(rid, None)
+            if not req:
+                # 也允许直接给 QQ 号授权：/dsh 批准 1000000001 24
+                qq = self._only_digits(m.group(1))
+                if len(qq) >= 5:
+                    hours = int(m.group(2) or perm.approval_hours)
+                    self._grant(qq, hours, "手动授权")
+                    return "✅ 已给 " + qq + " 开了 /dsh 权限（" + self._grant_text(qq) + "）"
+                return "没有 " + rid + " 这张申请单呢（/dsh 审批 看看还挂着哪些）"
+            hours = int(m.group(2) if m.group(2) is not None else perm.approval_hours)
+            self._grant(str(req.get("user_id")), hours, "审批通过")
+            self._save_approvals()
+            await self._notify_grant(req, approved=True)
+            return "✅ 批准啦：" + str(req.get("user_id")) + " 现在可以用 /dsh（" + self._grant_text(str(req.get("user_id"))) + "）"
+        m = self._REJECT_RE.match(raw)
+        if m:
+            rid = "A" + m.group(1)
+            req = self._approval_reqs.pop(rid, None)
+            if not req:
+                return "没有 " + rid + " 这张申请单呢（/dsh 审批 看看还挂着哪些）"
+            self._save_approvals()
+            await self._notify_grant(req, approved=False, reason=(m.group(2) or "").strip())
+            return "🙅 驳回啦：" + str(req.get("user_id")) + " 的申请 " + rid
+        m = self._REVOKE_RE.match(raw)
+        if m:
+            qq = self._only_digits(m.group(1))
+            if qq not in self._grants:
+                return "这个 QQ 没有授权记录哦：" + qq
+            self._grants.pop(qq, None)
+            self._save_grants()
+            return "🧹 收回 " + qq + " 的 /dsh 权限啦"
+        # 列表
+        lines = ["⚖️ 权限审批"]
+        if self._approval_reqs:
+            lines.append("待审批：")
+            for rid, req in sorted(self._approval_reqs.items()):
+                left = max(0, int(float(req.get("expires_at") or 0) - time.time()) // 60)
+                lines.append(
+                    "  " + rid + " · " + str(req.get("user_id")) + " · "
+                    + str(req.get("task") or "")[:30] + " · 还剩 " + str(left) + " 分钟"
+                )
+        else:
+            lines.append("待审批：没有～")
+        if self._grants:
+            lines.append("已授权：")
+            for qq, info in sorted(self._grants.items()):
+                exp = float(info.get("expires_at") or 0)
+                left = "永久" if not exp else ("剩 " + self._dur_text(max(0, exp - time.time())))
+                lines.append("  " + qq + " · " + left + " · by " + str(info.get("by") or "-"))
+        else:
+            lines.append("已授权：没有～")
+        return "\n".join(lines)
+
+    def _grant(self, user_id: str, hours: int, by: str) -> None:
+        qq = self._only_digits(user_id)
+        if not qq:
+            return
+        exp = 0.0 if int(hours) <= 0 else time.time() + int(hours) * 3600
+        self._grants[qq] = {
+            "granted_at": time.time(),
+            "expires_at": exp,
+            "by": by,
+        }
+        self._save_grants()
+
+    def _grant_text(self, user_id: str) -> str:
+        info = self._grants.get(self._only_digits(user_id)) or {}
+        exp = float(info.get("expires_at") or 0)
+        return "永久" if not exp else ("有效期 " + self._dur_text(max(0, exp - time.time())))
+
+    async def _notify_grant(
+        self, req: dict[str, Any], approved: bool, reason: str = ""
+    ) -> None:
+        stream = str(req.get("stream_id") or "") or self._user_streams.get(
+            self._only_digits(req.get("user_id")), ""
+        )
+        if not stream:
+            return
+        if approved:
+            text = (
+                "🎉 你的 /dsh 权限批下来啦（申请单 " + str(req.get("rid")) + "）～"
+                "现在可以直接发 /dsh <任务> 让大肥鱼干活了（" + self._grant_text(str(req.get("user_id"))) + "）"
+            )
+        else:
+            text = "🙅 这次的 /dsh 权限申请（" + str(req.get("rid")) + "）没通过呢" + (
+                "：" + reason if reason else "，有事可以直接问墨～"
+            )
+        try:
+            await self.ctx.send.text(text, stream)
+        except Exception:  # noqa: BLE001
+            self.ctx.logger.warning("通知申请人失败", exc_info=True)
+
+    def _prune_approvals(self) -> None:
+        now = time.time()
+        reqs = {k: v for k, v in self._approval_reqs.items() if float(v.get("expires_at") or 0) > now}
+        if len(reqs) != len(self._approval_reqs):
+            self._approval_reqs = reqs
+            self._save_approvals()
+        grants = {k: v for k, v in self._grants.items() if not float(v.get("expires_at") or 0) or float(v["expires_at"]) > now}
+        if len(grants) != len(self._grants):
+            self._grants = grants
+            self._save_grants()
 
     def _clamp_timeout(self, value: Optional[int]) -> int:
         """时间预算：0 = 不限时（默认）。只有显式给了值才设上限，且受 timeout_min/max 约束。"""
@@ -3022,7 +3387,7 @@ class DshBridgePlugin(MaiBotPlugin):
     # ── 命令：/dsh（任务 + 全部话题指令都收在 /dsh 下） ─────────
 
     _DSH_HELP = (
-        "🛠 /dsh 用法（大肥鱼的活儿都收在这儿啦～）\n  /dsh <任务>                     让大肥鱼干活（没话题会自动开一个；默认不限时）\n  /dsh #3 <任务>                  指定话题派活\n  /dsh peek | 状态 | 进展          偷看大肥鱼现在在干啥\n  /dsh stop [全部]                 喊停当前活儿（加「全部」连排队的也清掉）\n  /dsh new | 新建 | est            开个新话题\n  /dsh set <名> | 修改话题 <名>     给当前话题改个名\n  /dsh del [#3] | 删除话题 [#3]     收进档案袋（7 天后销毁，可 restore）\n  /dsh restore #3 | 恢复 #3         从档案袋里捞回来\n  /dsh list | 话题 [#3]            看看有哪些话题 / 切过去\n  /dsh help                       就是这段啦\n\n任务末尾加 (all) 能看完整合并转发过程；以 -- 开头的正文强制当任务（如 /dsh -- new 功能调研）\n想给单次任务设时限：/dsh --timeout 600 <任务>（默认不设）"
+        "🛠 /dsh 用法（大肥鱼的活儿都收在这儿啦～）\n  /dsh <任务>                     让大肥鱼干活（没话题会自动开一个；默认不限时）\n  /dsh #3 <任务>                  指定话题派活\n  /dsh peek | 状态 | 进展          偷看大肥鱼现在在干啥\n  /dsh stop [全部]                 喊停当前活儿（加「全部」连排队的也清掉）\n  /dsh new | 新建 | est            开个新话题\n  /dsh set <名> | 修改话题 <名>     给当前话题改个名\n  /dsh del [#3] | 删除话题 [#3]     收进档案袋（7 天后销毁，可 restore）\n  /dsh restore #3 | 恢复 #3         从档案袋里捞回来\n  /dsh list | 话题 [#3]            看看有哪些话题 / 切过去\n  /dsh 审批 | 授权列表             看待审批的申请和已授权的人（审批人）\n  /dsh 批准 <编号> [小时]          批准某人的使用申请（省略=默认时长，0=永久）\n  /dsh 拒绝 <编号>                 驳回申请（审批人）\n  /dsh 撤销 <QQ>                   收回某人的 /dsh 权限（审批人）\n  /dsh help                       就是这段啦\n\n没有权限的人发 /dsh 会先变成一张申请单，等审批人「/dsh 批准 <编号>」\n任务末尾加 (all) 能看完整合并转发过程；以 -- 开头的正文强制当任务（如 /dsh -- new 功能调研）\n想给单次任务设时限：/dsh --timeout 600 <任务>（默认不设）"
     )
 
     _STOP_RE = re.compile(r"^(?:stop|停止|停下|别做了)(?:\s+(?P<arg>.+))?$", re.IGNORECASE)
@@ -3136,10 +3501,6 @@ class DshBridgePlugin(MaiBotPlugin):
     async def handle_dsh(self, stream_id: str = "", **kwargs: Any):
         if not self.config.plugin.enabled:
             return False, "插件没启用呢", True
-        if not self._is_allowed(kwargs):
-            await self.ctx.send.text("唔…你没有权限用 /dsh 哦 (｡•́︿•̀｡)", stream_id)
-            return False, "无权限", True
-
         if stream_id:
             self._last_chat_id = stream_id
         body = ""
@@ -3148,6 +3509,24 @@ class DshBridgePlugin(MaiBotPlugin):
             body = str(matched.get("body") or "").strip()
         if not body:
             body = self._cmd_body(kwargs)
+
+        user_key = self._only_digits(self._extract_user_id(kwargs))
+        self._remember_stream(self._extract_user_id(kwargs), stream_id)
+        if user_key and user_key in self._approver_ids():
+            await self._flush_pending_to(user_key, stream_id)
+        if not self._effective_allowed(kwargs):
+            if not self.config.permission.approval_enabled:
+                await self.ctx.send.text("唔…你没有权限用 /dsh 哦 (｡•́︿•̀｡)", stream_id)
+                return False, "无权限", True
+            text = await self._create_approval_request(kwargs, body or "（发了个空的 /dsh）")
+            await self.ctx.send.text(text, stream_id)
+            return False, "待审批", True
+        # 审批人专属：批准 / 拒绝 / 撤销 / 审批列表
+        if self._is_approver(kwargs):
+            appr_text = await self._dispatch_approval_command(body, stream_id, kwargs)
+            if appr_text is not None:
+                await self.ctx.send.text(appr_text, stream_id)
+                return True, "审批指令", True
 
         # 控制指令（stop / peek）：始终可用，实验模式窗口内也不禁用
         ctrl_text = self._dispatch_control(body, stream_id)
@@ -3424,7 +3803,7 @@ class DshBridgePlugin(MaiBotPlugin):
 
         if not self.config.plugin.enabled:
             return {"success": False, "error": "插件未启用"}
-        if self.config.permission.enforce_tools and not self._is_allowed(kwargs):
+        if self.config.permission.enforce_tools and not self._effective_allowed(kwargs):
             return {"success": False, "error": "无权限使用 dsh_run"}
         if not task:
             return {"success": False, "error": "缺少 task"}
@@ -3615,7 +3994,7 @@ class DshBridgePlugin(MaiBotPlugin):
     async def _tool_schedule_task(self, **kwargs: Any) -> dict[str, Any]:
         if not self.config.plugin.enabled:
             return {"success": False, "error": "插件未启用"}
-        if self.config.permission.enforce_tools and not self._is_allowed(kwargs):
+        if self.config.permission.enforce_tools and not self._effective_allowed(kwargs):
             return {"success": False, "error": "无权限使用 schedule_task"}
         title = str(kwargs.get("title") or "").strip()
         prompt = str(kwargs.get("prompt") or "").strip()
@@ -3675,7 +4054,7 @@ class DshBridgePlugin(MaiBotPlugin):
         ],
     )
     async def _tool_schedule_update(self, **kwargs: Any) -> dict[str, Any]:
-        if self.config.permission.enforce_tools and not self._is_allowed(kwargs):
+        if self.config.permission.enforce_tools and not self._effective_allowed(kwargs):
             return {"success": False, "error": "无权限使用 schedule_update"}
         tid = str(kwargs.get("id") or "").strip()
         task = self._tasks.get(tid)
@@ -3706,7 +4085,7 @@ class DshBridgePlugin(MaiBotPlugin):
         parameters=[ToolParameterInfo(name="id", param_type=ToolParamType.STRING, description="任务 id", required=True)],
     )
     async def _tool_schedule_cancel(self, **kwargs: Any) -> dict[str, Any]:
-        if self.config.permission.enforce_tools and not self._is_allowed(kwargs):
+        if self.config.permission.enforce_tools and not self._effective_allowed(kwargs):
             return {"success": False, "error": "无权限使用 schedule_cancel"}
         tid = str(kwargs.get("id") or "").strip()
         if tid in self._tasks:
