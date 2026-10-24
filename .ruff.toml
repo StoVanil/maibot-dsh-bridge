@@ -1,0 +1,7 @@
+# 只开低风险规则：语法/未定义名/静默吞异常/无效 noqa
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "BLE", "S110", "RUF100"]
+ignore = ["E501", "BLE001"]

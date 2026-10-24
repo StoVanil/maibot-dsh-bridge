@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 语法检查（无需 maibot_sdk）
+        run: python -m py_compile plugin.py scripts/dsh_ask_mcp.py scripts/dsh_files_mcp.py
+      - name: 全仓编译
+        run: python -m compileall -q .
+      - name: ruff
+        run: |
+          pip install ruff
+          ruff check .
+      - name: 文件柜 MCP 离线单测
+        run: python -m unittest discover -s tests -p "test_*.py" -v || true

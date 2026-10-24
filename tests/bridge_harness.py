@@ -2,7 +2,7 @@
 """桥插件 P1（话题层）集成测试：假 Host + 真 dsh。
 
 用法（服务器上）：
-  <MAIBOT_HOME>/.venv/bin/python /tmp/bridge_harness.py
+  /opt/maibot/.venv/bin/python /tmp/bridge_harness.py
 """
 import asyncio
 import json
@@ -16,14 +16,14 @@ import socketserver
 import functools
 from pathlib import Path
 
-PLUGIN_DIR = os.environ.get("BRIDGE_PLUGIN_DIR", "<MAIBOT_HOME>/plugins/maibot-dsh-bridge")
+PLUGIN_DIR = os.environ.get("BRIDGE_PLUGIN_DIR", "/opt/maibot/plugins/maibot-dsh-bridge")
 sys.path.insert(0, PLUGIN_DIR)
 import plugin as bmod  # noqa: E402
 
 WS_ROOT = "/tmp/bridge-harness-ws"
 DATA_DIR = "/tmp/bridge-harness-data"
 STREAM = "test-stream-1"
-UID = "1000000001"
+UID = "2953679189"
 
 
 class FakeSend:
@@ -106,6 +106,7 @@ def build_plugin(napcat_file: str = ""):
     cfg["dsh"]["ask_enabled"] = True
     cfg["dsh"]["ask_timeout"] = 600
     cfg["dsh"]["uploads_enabled"] = True
+    cfg["dsh"]["upload_url_hosts"] = "*"  # 测试里用本地 HTTP 服务器，=v0.13.0 的 SSRF 白名单只放行 QQ 域名
     cfg["permission"]["enabled"] = True
     cfg["permission"]["mode"] = "whitelist"
     cfg["permission"]["allowed_users"] = UID
@@ -138,7 +139,7 @@ def msg(text: str, stream: str = STREAM, uid: str = UID):
         "session_id": stream,
         "processed_plain_text": text,
         "raw_message": [{"type": "text", "data": text}],
-        "message_info": {"user_info": {"user_id": uid, "user_nickname": "测试用户"}, "group_info": None},
+        "message_info": {"user_info": {"user_id": uid, "user_nickname": "辰星"}, "group_info": None},
     }
 
 
@@ -172,7 +173,7 @@ async def main():
     p = build_plugin()
     await p.on_load()
 
-    print("\n===== 0) 附件入站（先落旧版按流目录） =====")
+    print("\n===== 0) 附件入站（v0.13.0：按 QQ 号落 files/<QQ>/，纯文件交给墨） =====")
     src = Path("/tmp/bridge-harness-files")
     src.mkdir(exist_ok=True)
     sample = src / "hello.py"
@@ -183,15 +184,34 @@ async def main():
         msg(f"[文件] hello.py，大小: {sample.stat().st_size}，链接: http://127.0.0.1:{port}/hello.py")
     )
     await asyncio.sleep(1.5)
-    assert res == {"action": "abort"}, "纯文件应拦墨"
-    legacy = Path(WS_ROOT) / STREAM
-    assert (legacy / "uploads").is_dir() and any((legacy / "uploads").iterdir()), "附件没落到旧目录"
-    print("旧流目录附件 OK")
+    assert res is None, f"非实验模式的纯文件应交给墨（而不是 abort），实际 {res!r}"
+    ufiles = p._user_files_dir(UID)
+    assert ufiles.is_dir() and any(x.is_file() for x in ufiles.iterdir()), "附件没落到 files/<QQ>/"
+    assert not (Path(WS_ROOT) / STREAM / "uploads").exists(), "不该再往话题目录 uploads/ 落"
+    print("按 QQ 号分目录附件 OK:", [x.name for x in ufiles.iterdir()])
 
     print("\n===== 0b) /dsh 无参数 = 帮助（且拦截） =====")
     await run_cmd(p, "/dsh")
-    assert "/dsh new" in p.ctx.send.joined(), "帮助里没有子指令说明"
+    assert "/dsh files" in p.ctx.send.joined() and "/dsh help 话题" in p.ctx.send.joined(), "帮助里没有文件柜入口/场景入口"
     await run_cmd(p, "/dsh 帮助", "帮助")
+
+    print("\n===== 0c) 分场景帮助 / 文件柜 / 排队 =====")
+    p.ctx.send.clear()
+    await run_cmd(p, "/dsh help 文件", "help 文件")
+    assert "文件柜" in p.ctx.send.joined(), p.ctx.send.joined()[:200]
+    p.ctx.send.clear()
+    await run_cmd(p, "/dsh help 7", "help 7")
+    assert "【开工干活】" in p.ctx.send.joined(), "数字别名 7 应给全部帮助"
+    p.ctx.send.clear()
+    await run_cmd(p, "/dsh queue", "queue")
+    assert "排队列表空空" in p.ctx.send.joined(), p.ctx.send.joined()[:160]
+    p.ctx.send.clear()
+    await run_cmd(p, "/dsh files", "files")
+    assert "文件柜" in p.ctx.send.joined() and "hello.py" in p.ctx.send.joined(), p.ctx.send.joined()[:300]
+    p.ctx.send.clear()
+    await run_cmd(p, "/dsh status", "status")
+    assert "没在跑" in p.ctx.send.joined() or "最近一次" in p.ctx.send.joined(), p.ctx.send.joined()[:160]
+    print("分场景帮助 / files / queue / status OK")
 
     print("\n===== 1) /dsh 首任务：建话题 + 命名 + 会话 =====")
     await run_cmd(p, "/dsh 读一下工作区的 hello.py 说它是什么语言", "读一下工作区的 hello.py 说它是什么语言")

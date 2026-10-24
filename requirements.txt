@@ -1,0 +1,5 @@
+# 桥本体只用标准库；以下为运行期/开发期可选依赖
+# - dsh 通过 npm 全局安装（npm i -g @deepseek-ai/dsh）
+# - 文件柜 MCP 工具（scripts/dsh_files_mcp.py）纯标准库
+# 开发/测试
+ruff>=0.6

@@ -1,3 +1,46 @@
+## v0.13.0 — 文件柜（按 QQ 隔离）+ 分场景帮助 + 实验模式指令开启 + 审计修复
+
+**新功能**
+
+- **文件柜 `files/<QQ号>/`**：QQ 用户发给大肥鱼的文件按 QQ 号分目录，跨话题共用、不受话题归档影响。
+  - 新增 `/dsh files`（看）、`rm <序号|名字>`（删）、`send <序号|名字>`（取回）、`mkdir <名>`（建子目录）、
+    `all` / `users`（主人专用：看所有人 / 看各人占用）。
+  - 每个用户只能看/管理自己的文件夹，主人（审批人）可跨目录；路径做了 `..`/绝对路径/符号链接防护。
+- **文件管理 MCP 工具** `scripts/dsh_files_mcp.py`（纯标准库 stdio MCP）：给 dsh 提供
+  `files_list / files_read / files_info / files_mkdir / files_move / files_delete / files_users`，
+  按 `DSH_FILES_OWNER_QQ` 隔离，超管（`DSH_FILES_SUPERUSERS`）可跨目录。
+- **文件路由调整**：非实验模式 + 消息里没有 `/dsh` → 文件交给墨自己读和回答；带 `/dsh` 才进大肥鱼。
+  实验模式下由墨自行判断（只有「文件 + 文字」才会触发决策，纯文件只回执）。
+- **分场景帮助**：`/dsh help 话题 | 文件 | 权限 | 实验 | 排障 | 全部`（也认数字 1–7、`新手`/`故障`/`所有` 等别名）；
+  默认帮助一屏总览。文案见 `docs/帮助文案.md`。
+- **实验模式改指令开启**：不再需要面板总开关，`/dsh 实验开启` → `/dsh 实验确认 <6位码>` 即可，最长 24 小时、到期自动关。
+- 新增 `/dsh queue`（看排队）、`/dsh status`（= peek 英文别名）、`/dsh rename`（= set）、`/dsh archive`（= del）。
+- 新增配置 `dsh.office_python`（Office 解释器路径可配置，不再硬编码）与 `dsh.upload_url_hosts`（附件直链域名白名单）。
+- 新增 `_manifest.json` 版本 0.13.0、`config.toml.example` 全量字段、`.ruff.toml` 与 CI 工作流。
+
+**审计修复**（`analysis/遗留问题-对照` 报告里仍存在的项）
+
+- A1：**非零退出码一律判失败**（以前吐过 final 的崩溃会被当成功）；`error` 事件在转发卡片里显示为「⚠️ 错误」节点。
+- A2：Windows **停止不再"假停止"**：改为先 `taskkill /T /F` 杀整棵进程树，再兜底 `kill()`，不留孤儿 dsh。
+- A5：归档保护补全（运行中话题即使先切走也不能归档）；清理归档改为「目录真删掉才删记录」，并修正相对路径 bug。
+- A6：cron 改 Vixie 语义（日/周双限取 OR、`7`=周日、非法表达式直接拒绝），不再逐分钟空转 366 天；`at` 无时区按本地时间解释。
+- A7：Windows 启动不再经 `cmd /c` 吞引号（带空格路径可启动），`extra_args` 按平台正确拆分。
+- A8：重启后不再恢复 ipc 通道的 pending（进程已死）；过期一次性定时任务丢弃、周期任务重算下一次。
+- A9：定时任务改为异步派发，不再阻塞调度循环（过期清理/归档/排队照常）。
+- A10：没有 psutil 时按 `/proc` 判 CPU 活跃（其它平台看进程存活），不再永远「活跃」。
+- A11：修掉 v0.11.5 文案重写引入的 AGENTS.md 每轮追加回归（marker 匹配 + 只追加一次）。
+- A12/A13：MCP 提问也受 `ask_max_rounds` 限制；关键 JSON 统一原子写（`.part` + `os.replace`）。
+- A14：`tool_result` 用 `tool_call` 记录的工具名补节点标题。
+- B2：附件直链只认 `upload_url_hosts` 里的 QQ 文件域名（防 SSRF），拒绝带凭据 URL，非白名单链接一律走 NapCat。
+- B3：定时任务**触发时重新校验**创建者授权，插件停用则跳过。
+- B4：`dsh_status` / `schedule_list` 补权限校验（不再能被非授权用户经 Planner 调用）。
+- B5：黑名单模式取不到发送者 ID 时改为 fail-closed（不再放行）。
+- B6：`plugin.enabled=false` 时收件钩子/调度循环也停；`ask_enabled` 关时不再起提问监听。
+- B7：附件解码/读取前先判大小（图片 base64 长度、NapCat 临时文件 `stat`），避免内存/磁盘 DoS。
+- B8：救回文件加符号链接与工作区边界校验；B9：回灌给墨的内容包成「外部内容-不可信」。
+- C4：凭据状态检测跟随 `dsh_home`；Office 解释器路径改成配置项。
+- C5：`config_version` 统一 0.13.0；manifest 版本/描述/仓库地址修正；README 恢复「安全边界」章节并更新命令表。
+
 ## v0.11.4 — 会话问答与文件收发修复
 
 - 清理上一轮被中断任务遗留的 `ipc/questions`（不再把旧提问当成本轮问题）。

@@ -1,4 +1,4 @@
-# headless profile 的用户补丁层（桥自动维护）
+# headless profile 的用户补丁层（示例：按需合并到你自己的 cordis.patch.yml）
 # 1) 启用凭据服务：headless 模板默认禁用，导致读不到 ~/.dsh/.credentials.yaml
 - id: credentials
   disabled: false
@@ -16,6 +16,16 @@
         cwd: !!js process.cwd()
         toolCallTimeoutMs: 900000
         failOnStartupError: true
+    # 文件柜工具：dsh 管理用户发来的文件（按 QQ 号隔离，普通用户只能看自己目录）
+    - id: mcp-files
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: files
+        transport: stdio
+        command: <MAIBOT_HOME>/.venv/bin/python
+        args: ['<MAIBOT_HOME>/scripts/dsh_files_mcp.py']
+        toolCallTimeoutMs: 60000
+        failOnStartupError: false
     # 交付文件：dsh 用 present 声明，桥打包发 QQ
     - id: tool-present
       name: '@deepseek-ai/dsh-tool-present'

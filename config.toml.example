@@ -3,68 +3,81 @@
 
 [plugin]
 enabled = true
-config_version = "0.11.0"
+config_version = "0.13.0"
 
 [dsh]
-command = "dsh"
-extra_args = "--profile headless"          # 桥会自动追加 --json
-workspace_dir = "<工作区根目录>"             # 例：/data/dsh-work/mai；留空则用麦麦 data 目录下的 workspace
+command = "dsh"                            # dsh 可执行命令（Windows 写 dsh.cmd 也可，带空格路径已支持）
+extra_args = "--profile headless"          # 桥会自动追加 --json / --session-id / -
+workspace_dir = "<工作区根目录>"            # 例：/data/dsh-work/mai；留空则用麦麦 data 目录下的 workspace
 dsh_home = ""                              # headless 的 DSH_HOME；建议独立目录（如 /root/.dsh-headless）
                                            # 留空=与 dsh Web GUI 共用 ~/.dsh（可能抢会话写锁）
+office_python = "/opt/dsh-office-venv/bin/python"
+                                           # 处理 Word/PPT/Excel 的解释器（写进工作区 AGENTS.md）
+                                           # 没装 Office 依赖就保持默认，或改成你自己的 venv 路径
 # ── 时间策略：默认不设时间预算（模型估不准自己的耗时，靠用户 /dsh stop 手动停）──
-timeout_default = 0                         # 0 = 不限时（默认）
-timeout_min = 0                             # 0 = 不设下限
-timeout_max = 0                             # 0 = 无上限；想封顶可填秒数
+timeout_default = 0                        # 0 = 不限时（默认）
+timeout_min = 0                            # 0 = 不设下限
+timeout_max = 0                            # 0 = 无上限；想封顶可填秒数
 # 死锁兜底（不是时间预算）：连续这么久没有任何输出、进程也静默才判卡死
 heartbeat_seconds = 600
-repeat_threshold = 25                       # 同一行输出重复达到此次数 → 判死循环
-grace_seconds = 15                          # 先温和 terminate，超过这么久才强杀进程树
+repeat_threshold = 25                      # 同一行输出重复达到此次数 → 判死循环
+grace_seconds = 15                         # 温和终止的宽限期（秒），超时才强杀进程树
 max_output_chars = 8000
 max_forward_nodes = 40
 node_max_chars = 1500
-display_mode = "forward"                    # forward=合并转发 / text=纯文本
-silent_inject_chars = 6000                  # 静默模式下回灌给麦麦的结果上限
-context_inject_chars = 600                  # 回灌摘要上限（墨唯一出口时用 silent_inject_chars）
-deliver_max_files = 8                       # present 交付物一次最多发几个
-# ── 异常/手动停止时的「救回」：把本轮新产出的文件也发出去，别让活白干 ──
-salvage_on_fail = true
-# 任务完成后把最终结果直接发到聊天（关掉=只回灌给墨；实测墨不一定接话）
-direct_result = true
-direct_result_chars = 1500              # 直发时聊天里最多显示多少字，超出改发 .md 文件
-salvage_max_mb = 20                         # 单个救回文件大小上限
-allow_self_schedule = true                  # 允许 dsh 用 schedule-requests/ 自建定时任务
+display_mode = "forward"                   # forward=合并转发卡片 / text=纯文本
+deliver_max_files = 8
+salvage_on_fail = true                     # 任务被停/异常结束时把本轮新产出的文件救回
+salvage_max_mb = 20
+silent_inject_chars = 6000                 # 静默模式回灌给墨的结果上限
+context_inject_chars = 600                 # 只回灌摘要时的上限
+direct_result = true                       # 结果直接发聊天（墨不一定接话，直发更稳）
+direct_result_chars = 1500                 # 直发超过这个长度就落成 .md 文件
+allow_self_schedule = true                 # 允许 dsh 经 schedule-requests 自建定时任务（风险自负）
 api_key_env = "DEEPSEEK_API_KEY"
-api_key = ""                                # 留空则用系统环境变量（勿把 key 提交进仓库）
-permission_mode = "danger-full-access"      # workspace-write / read-only / danger-full-access
+api_key = ""                               # 明文 key；留空则用环境变量（勿提交/分享）
+permission_mode = "danger-full-access"     # dsh 沙箱：danger-full-access / workspace-write / read-only
+                                           # 注意：danger-full-access 等于把服务器 shell 交给白名单用户
+
+# ── dsh 提问通道（ask MCP）──
+ask_enabled = true
+ask_timeout = 900                          # 等回答的秒数
+ask_max_rounds = 5                         # 单任务最多连续问几轮（文件通道与 MCP 通道都受限）
+
+# ── QQ 文件入站（v0.13.0：按 QQ 号分目录 files/<QQ>/）──
+uploads_enabled = true
+upload_max_mb = 50                         # 单文件上限（MB）
+upload_url_hosts = "ftn.qq.com,multimedia.nt.qq.com.cn,qfile.qq.com,tjc-download.ftn.qq.com,gzc-download.ftn.qq.com,hzfile.ftn.qq.com"
+                                           # 允许直链下载的域名（防 SSRF）；* = 不限制（不建议）
+upload_ttl_minutes = 180                   # 附件出现在任务提示里的时长
+upload_ack = false                         # 收到附件是否回执（默认关，避免双份回复）
+upload_wait_instruct = true                # 实验模式下纯文件先不叫醒墨（等用户说要干什么）
 
 [permission]
 enabled = true
-mode = "whitelist"                          # whitelist / blacklist
-allowed_users = "<你的QQ号>"                 # 多个用英文逗号分隔
+mode = "whitelist"                         # whitelist=仅名单内可用 / blacklist=名单内不可用
+allowed_users = "<QQ号,逗号分隔>"          # 白名单模式留空=拒绝所有人（fail-closed）
 allowed_groups = ""
 blocked_users = ""
 blocked_groups = ""
-enforce_tools = true                        # 工具（dsh_run 等）也走同一套白名单
-# ── 权限审批：未授权的人发 /dsh 会先发一张申请单，审批人批准后可用 ──
-approval_enabled = true
-approvers = ""                              # 审批人 QQ，逗号分隔；留空=只认白名单第一个（主人）
-approval_hours = 24                         # 批准后授权有效小时数；0=永久
-approval_ttl_minutes = 30                   # 申请单有效期（分钟）
-
-[topic]
-# 话题模式：每个话题 = 一条持久 dsh 会话 + 独立工作目录 + 编号（#1、#2…）
-enabled = true
-private_only = true                         # 只在私聊启用（群聊保持旧行为）
-idle_hours = 24                             # 闲置超过这么多小时，下次派活自动新开话题
-name_max_chars = 12
-queue_max = 3                               # 全局串行，排队上限
-archive_keep_days = 7                       # 归档保留天数，到期自动删目录并释放编号
-archive_readonly = true                     # 归档话题只读，必须先 /dsh restore #N
+enforce_tools = true                       # 是否对 dsh_run / schedule_* / 状态类工具也施加名单
+# ── 审批制 ──
+approval_enabled = true                    # 名单外的人发 /dsh 先发申请单，不直接拒绝
+approvers = ""                             # 审批人 QQ；留空=白名单里的第一个人（视为主人）
+approval_hours = 24                        # 批准后有效期（小时）；0=永久
+approval_ttl_minutes = 30                  # 申请单有效期（分钟）
 
 [experimental]
-# 【实验性】允许墨自主调用话题/派活工具（不用你打 /dsh 命令）。
-# 打开后还要在 QQ 里 /dsh 实验开启 + 二次确认，最长只能开启 24 小时，到期自动关闭；
-# 期间 /dsh 命令会被临时禁用（/dsh stop、/dsh peek 仍可用）。
-agent_tools = false
+# v0.13.0 起不需要面板总开关：QQ 里 /dsh 实验开启 → /dsh 实验确认 <6位码> 即可，最长 24 小时。
+# agent_tools 只为兼容旧配置保留，填什么都不影响。
+agent_tools = true
 agent_tools_hours = 24
 agent_confirm_ttl_minutes = 10
+
+[topic]
+enabled = true
+private_only = true                        # 话题模式只在私聊生效
+idle_hours = 24                            # 闲置多久自动开新话题
+name_max_chars = 12
+queue_max = 3                              # 最多排队几个任务
+archive_keep_days = 7                      # 归档后保留天数

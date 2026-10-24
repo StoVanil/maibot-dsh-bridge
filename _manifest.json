@@ -1,19 +1,19 @@
 {
   "manifest_version": 2,
   "id": "ji-or-ji.maibot-dsh-bridge",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "name": "麦麦×dsh 桥",
-  "description": "把 DeepSeek Harness (大肥鱼) 接入麦麦：话题制会话（/大肥鱼 统一指令）、持久会话、独立工作区、大肥鱼 提问（MCP ask，同一进程继续）、QQ 发文件给 大肥鱼、present 交付文件回传、Office 文档技能、定时任务；/大肥鱼 stop 停止、/大肥鱼 peek 看进展；实验功能：设置里临时开启 24h 后墨可自主调度。基于 ji-or-ji/maibot-大肥鱼-bridge 的派生版本。",
+  "description": "把 DeepSeek Harness (大肥鱼) 接入麦麦：话题制会话（/dsh 统一指令）、持久会话、独立工作区、大肥鱼 提问（MCP ask 工具，同一进程继续）、QQ 发文件按 QQ 号分目录（files/<QQ>/，带 /dsh files 文件柜管理与 dsh 侧 files MCP 工具）、present 交付文件回传、Office 文档技能、定时任务、分场景 /dsh help；实验模式：QQ 里 /dsh 实验开启 + 确认码即可让墨自主调度（最长 24h，无需面板开关）。",
   "author": {
     "name": "ji-or-ji",
     "url": "https://github.com/ji-or-ji"
   },
   "license": "MIT",
   "urls": {
-    "repository": "https://github.com/<YOUR_GITHUB>/maibot-dsh-bridge",
-    "homepage": "https://github.com/<YOUR_GITHUB>/maibot-dsh-bridge",
-    "documentation": "https://github.com/<YOUR_GITHUB>/maibot-dsh-bridge/blob/main/README.md",
-    "issues": "https://github.com/<YOUR_GITHUB>/maibot-dsh-bridge/issues"
+    "repository": "https://github.com/StoVanil/maibot-dsh-bridge",
+    "homepage": "https://github.com/StoVanil/maibot-dsh-bridge",
+    "documentation": "https://github.com/StoVanil/maibot-dsh-bridge/blob/main/docs/DSH话题-使用说明书.md",
+    "issues": "https://github.com/StoVanil/maibot-dsh-bridge/issues"
   },
   "host_application": {
     "min_version": "1.2.0",
