@@ -87,6 +87,7 @@ QQ ──► MaiBot 宿主 ──► 本插件（桥）
 - `dsh.timeout_default = 0`：**0 = 不限时**（默认）。想设上限填秒数，或用 `/dsh --timeout N`。
 - `dsh.heartbeat_seconds = 600`：这是**死锁兜底**（连续无输出且进程静默才判卡死），不是时间预算。
 - `dsh.salvage_on_fail = true`：任务被停/异常结束时，把本轮新产出的文件救回发出。
+- `dsh.dsh_home`：建议设成独立目录（如 `/root/.dsh-headless`），让桥与 dsh Web GUI 各用一套会话库；该目录里需要 `.credentials.yaml` 和 `profiles/headless/`。
 - `topic.enabled / topic.private_only`：话题模式及其适用范围（默认只私聊）。
 - `experimental.agent_tools`：实验功能总开关（还需在 QQ 里 `/dsh 实验开启` + 二次确认）。
 

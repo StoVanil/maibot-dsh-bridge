@@ -481,6 +481,56 @@ async def main():
         p.config.dsh.command = orig_cmd
         p.config.dsh.extra_args = orig_extra
 
+    print("\n===== 22) DSH_HOME 注入 + 会话不存在时自动换新会话 =====")
+    fake_home = Path("/tmp/fake-dsh-home")
+    script = "#!/bin/sh\n"
+    script += 'echo \'{"type":"session","sessionId":"session-fake-home"}\'\n'
+    script += 'echo "{\\"type\\":\\"final\\",\\"text\\":\\"DSH_HOME=$DSH_HOME\\"}"\n'
+    script += "exit 0\n"
+    fake_home.write_text(script, encoding="utf-8")
+    fake_home.chmod(0o755)
+    fake_missing = Path("/tmp/fake-dsh-missing")
+    fake_missing.write_text(
+        "#!/bin/sh\n"
+        'echo \'{"type":"error","message":"session \\"session-gone\\" not found"}\'\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_missing.chmod(0o755)
+    orig_cmd, orig_extra = p.config.dsh.command, p.config.dsh.extra_args
+    try:
+        # 22a：dsh_home 配了 → 子进程环境里应带上 DSH_HOME
+        p.config.dsh.command = str(fake_home)
+        p.config.dsh.extra_args = ""
+        p.config.dsh.dsh_home = "/tmp/fake-dsh-home-dir"
+        p._history.clear()
+        p.ctx.send.clear()
+        await p._run_and_report("测试：看看 DSH_HOME", STREAM, 0, {"user_id": UID})
+        hist = p._history[-1] if p._history else {}
+        summary = str(hist.get("summary") or "")
+        print("结果摘要:", summary[:100])
+        assert "DSH_HOME=/tmp/fake-dsh-home-dir" in summary, f"DSH_HOME 没注入：{summary}"
+        # 22b：会话不存在 → 自动换新会话并提示
+        p.config.dsh.command = str(fake_missing)
+        p.config.dsh.dsh_home = ""
+        cur = p._topics.get(p._topic_current.get(STREAM) or 0)
+        if cur is not None:
+            cur["session_id"] = "session-gone"
+            p._save_topics()
+        p._history.clear()
+        p.ctx.send.clear()
+        await p._run_and_report("测试：旧会话没了", STREAM, 0, {"user_id": UID})
+        joined = p.ctx.send.joined()
+        print("[输出]", joined[:260].replace("\n", " / "))
+        assert "🔄" in joined, f"没有会话不存在提示：{joined}"
+        assert "执行失败" in joined, f"没有失败提示：{joined}"
+        hist = p._history[-1] if p._history else {}
+        assert hist.get("reason") == "failed", hist
+    finally:
+        p.config.dsh.command = orig_cmd
+        p.config.dsh.extra_args = orig_extra
+        p.config.dsh.dsh_home = ""
+
     print("\n===== 全部通过 =====")
     srv.shutdown()
 

@@ -144,6 +144,13 @@ class DshConfig(PluginConfigBase):
     command: str = Field(default="dsh", description="dsh 可执行命令（如 dsh，或 C:\\nodejs\\dsh.cmd）")
     extra_args: str = Field(default="--profile headless", description="固定附加参数；桥会自动追加 --json")
     workspace_dir: str = Field(default="", description="dsh 工作目录；留空则用 data/dsh-bridge/workspace")
+    dsh_home: str = Field(
+        default="",
+        description=(
+            "headless 使用的 DSH_HOME（会话库/凭据/配置目录）。留空=默认 ~/.dsh；"
+            "建议设成独立目录（如 /root/.dsh-headless），这样桥的会话与 dsh Web GUI 互不干扰、也不会抢会话写锁"
+        ),
+    )
     timeout_default: int = Field(
         default=0,
         description="默认时间预算（秒）；0=不限时（默认）。模型估不准自己的耗时，所以默认靠用户 /dsh stop 控制",
@@ -404,9 +411,10 @@ class DshBridgePlugin(MaiBotPlugin):
         self._load_topics()
         asyncio.create_task(self._scheduler_loop())
         self.ctx.logger.info(
-            "麦麦×dsh 桥插件已加载 (command=%s, budget=%s, display=%s)",
+            "麦麦×dsh 桥插件已加载 (command=%s, budget=%s, home=%s, display=%s)",
             self.config.dsh.command,
             "不限时" if int(self.config.dsh.timeout_default) <= 0 else f"{self.config.dsh.timeout_default}s",
+            str(self.config.dsh.dsh_home or "").strip() or "默认(~/.dsh)",
             self.config.dsh.display_mode,
         )
 
@@ -2102,6 +2110,9 @@ class DshBridgePlugin(MaiBotPlugin):
         if api_key:
             env[conf.api_key_env] = api_key
         env["DSH_PERMISSION_MODE"] = conf.permission_mode
+        if str(conf.dsh_home or "").strip():
+            # 隔离 headless 的会话库：与 dsh Web GUI 各用一套 DSH_HOME，避免会话写锁冲突
+            env["DSH_HOME"] = str(conf.dsh_home).strip()
 
         state = _RunState()
         self._run_state = state
@@ -2792,16 +2803,18 @@ class DshBridgePlugin(MaiBotPlugin):
             state.final_copy() + " " + self._state_error_text(state)
         ):
             reason = "failed"
-        # 会话写锁冲突（dsh 会话被别的进程占用，多为 dsh Web GUI）：换一条新会话重跑一次，别让用户干等
-        err_now = self._state_error_text(state).lower()
-        if session_id and "active write handle" in err_now:
-            self.ctx.logger.warning("dsh 会话被占用（write handle），改用新会话重试一次")
+        # 会话失效（被别的进程占用 / 已不存在）：换一条新会话重跑一次，别让用户干等
+        issue = self._session_issue(self._state_error_text(state))
+        if session_id and issue:
+            self.ctx.logger.warning("dsh 会话失效（%s），改用新会话重试一次", issue)
+            hint = (
+                "🔒 旧会话正被 dsh Web GUI 占用，已改用新会话继续（不继承上文）；"
+                "想接着用旧会话，先在 Web GUI 里关掉它再派活。"
+                if issue == "locked"
+                else "🔄 旧会话已不存在（可能被清理或归档），已开一条新会话继续（不继承上文）。"
+            )
             try:
-                await self.ctx.send.text(
-                    "🔒 旧会话正被 dsh Web GUI 占用，已改用新会话继续（不继承上文）；"
-                    "想接着用旧会话，先在 Web GUI 里关掉它再派活。",
-                    stream_id,
-                )
+                await self.ctx.send.text(hint, stream_id)
             except Exception:  # noqa: BLE001
                 pass
             if topic:
@@ -2817,6 +2830,9 @@ class DshBridgePlugin(MaiBotPlugin):
                 reason = "error"
             finally:
                 self._running = False
+            if topic and state.session_id:
+                topic["session_id"] = state.session_id
+                self._save_topics()
         self._record_history(task, reason, state)
         self._current_task = ""
         # dsh 如果写了 ask-requests/*.json，就发问题、等回答、稍后续跑
@@ -2846,6 +2862,17 @@ class DshBridgePlugin(MaiBotPlugin):
                     self.ctx.logger.info("救回 %d 个文件（原因 %s）", n, reason)
             except Exception:  # noqa: BLE001
                 self.ctx.logger.warning("救回产出文件失败", exc_info=True)
+        # 凭据类失败给一句能照做的提示（否则用户只看到一段英文报错）
+        err_low = self._state_error_text(state).lower()
+        if reason == "failed" and ("no api key" in err_low or "missing_credential" in err_low):
+            try:
+                await self.ctx.send.text(
+                    "🔑 dsh 找不到可用的 API key：把 DEEPSEEK_API_KEY 配到当前 DSH_HOME 的凭据里，"
+                    "或让麦麦进程带上该环境变量（dsh.dsh_home 指向哪套就用哪套凭据）。",
+                    stream_id,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         if waiting:
             try:
                 await self._start_ask(ask, state, stream_id, ctx, full, timeout, depth)
@@ -2879,6 +2906,21 @@ class DshBridgePlugin(MaiBotPlugin):
             await self._process_schedule_requests(stream_id, ctx or self._extract_ctx({}))
         except Exception:  # noqa: BLE001
             self.ctx.logger.warning("处理定时任务请求失败", exc_info=True)
+
+    @staticmethod
+    def _session_issue(err: str) -> str:
+        """会话失效类型：locked=被别的进程占用；missing=已不存在；空=不是会话问题。"""
+        low = (err or "").lower()
+        if "active write handle" in low or "already owned" in low:
+            return "locked"
+        if "session" in low and (
+            "not found" in low
+            or "unknown session" in low
+            or "no such session" in low
+            or "does not exist" in low
+        ):
+            return "missing"
+        return ""
 
     @staticmethod
     def _state_error_text(state: "_RunState") -> str:

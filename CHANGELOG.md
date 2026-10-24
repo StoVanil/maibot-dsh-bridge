@@ -3,6 +3,15 @@
 本仓库是 [ji-or-ji/maibot-dsh-bridge](https://github.com/ji-or-ji/maibot-dsh-bridge) 的派生版本。
 上游历史见原仓库；下面是本 fork 相对上游 v0.6.1 的改动。
 
+## v0.11.2 — DSH_HOME 隔离（从根上避免会话写锁）
+
+- 新增 `dsh.dsh_home`：给桥派活的 dsh 子进程设置独立的 `DSH_HOME`，headless 与 dsh Web GUI
+  各用一套会话库/凭据/配置，互不干扰、也不会再出现「会话被 GUI 占用」。
+- 会话不存在（被清理/归档）时自动开一条新会话继续，并提示 `🔄 旧会话已不存在…`。
+- 凭据缺失（`MISSING_CREDENTIAL` / no API key）时给出可照做的提示：去当前 DSH_HOME 配 `DEEPSEEK_API_KEY`。
+- 部署说明：新 DSH_HOME 里需要 `.credentials.yaml` 与 `profiles/headless/`（含本项目的 cordis 补丁）。
+- 集成测试新增用例 22（验证 DSH_HOME 注入 + 会话不存在自动恢复）。
+
 ## v0.11.1 — 失败不再静默 + 会话占用自动恢复
 
 - **修复「无输出」**：dsh 以 `{"type":"error"}` 直接退出时（典型是会话被别的进程占用），

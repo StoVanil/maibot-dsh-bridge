@@ -9,6 +9,8 @@ config_version = "0.11.0"
 command = "dsh"
 extra_args = "--profile headless"          # 桥会自动追加 --json
 workspace_dir = "<工作区根目录>"             # 例：/data/dsh-work/mai；留空则用麦麦 data 目录下的 workspace
+dsh_home = ""                              # headless 的 DSH_HOME；建议独立目录（如 /root/.dsh-headless）
+                                           # 留空=与 dsh Web GUI 共用 ~/.dsh（可能抢会话写锁）
 # ── 时间策略：默认不设时间预算（模型估不准自己的耗时，靠用户 /dsh stop 手动停）──
 timeout_default = 0                         # 0 = 不限时（默认）
 timeout_min = 0                             # 0 = 不设下限
