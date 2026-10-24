@@ -1,0 +1,31 @@
+# headless profile 的用户补丁层（桥自动维护）
+# 1) 启用凭据服务：headless 模板默认禁用，导致读不到 ~/.dsh/.credentials.yaml
+- id: credentials
+  disabled: false
+
+# 2) 桥推荐的 dsh 插件
+- insert:
+    # 提问工具：dsh 调用 → 写 ipc/questions → 桥发 QQ → 答案写回 → 同一进程继续
+    - id: mcp-ask
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: ask
+        transport: stdio
+        command: <MAIBOT_HOME>/.venv/bin/python
+        args: ['<MAIBOT_HOME>/scripts/dsh_ask_mcp.py']
+        cwd: !!js process.cwd()
+        toolCallTimeoutMs: 900000
+        failOnStartupError: true
+    # 交付文件：dsh 用 present 声明，桥打包发 QQ
+    - id: tool-present
+      name: '@deepseek-ai/dsh-tool-present'
+      config:
+        maxFiles: 8
+    # 记录每轮工作区文件变更
+    - id: workspace-changes
+      name: '@deepseek-ai/dsh-workspace-changes'
+      config:
+        maxFiles: 200
+    # Word/PPT/Excel 技能（Python 解释器写在 AGENTS.md：<office-venv 路径>/bin/python）
+    - id: skill-office
+      name: '@deepseek-ai/dsh-skill-office'

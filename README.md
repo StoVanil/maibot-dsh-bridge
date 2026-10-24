@@ -1,140 +1,128 @@
 # 麦麦×dsh 桥（maibot-dsh-bridge）
 
-把 [DeepSeek Harness (dsh)](https://deepseek.com/harness/) 接入麦麦：麦麦用一句话下单，dsh 在服务器上把活干完——过程以**合并转发**回传，结果落成文件、回灌麦麦上下文，产出的文件**打包发回群**，还能**定时自排班**。
+把 [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/dsh) 接进 [麦麦 (MaiBot)](https://github.com/MaiM-with-u/MaiBot)：
+在 QQ 里发一条 `/dsh <任务>`，dsh 就在服务器上把活干完——**每个话题一条持久会话、一个独立工作目录**，
+过程可以随时看（`/dsh peek`）、随时停（`/dsh stop`），产出的文件直接发回聊天。
+
+> **本仓库是 [ji-or-ji/maibot-dsh-bridge](https://github.com/ji-or-ji/maibot-dsh-bridge) 的派生版本（fork）。**
+> 上游 v0.6.1 提供基础桥接（派活 / 转发回传 / 定时任务 / 权限 / 交付物）；
+> 本 fork 在其上加了话题制会话、MCP 提问、`stop`/`peek`、不限时策略、异常救回等，详见 [CHANGELOG.md](CHANGELOG.md)。
+> 原始版权归 ji-or-ji，遵循 MIT 许可（见 [LICENSE](LICENSE)）。
+
+## 特性
+
+- **话题制会话**：每个话题 = 一条持久 dsh 会话（`--session-id`）+ 独立工作目录 + 编号（`#1`、`#2`…），话题可命名、归档、恢复。
+- **指令全收在 `/dsh` 下**：派活、话题管理、停止、看进展都是一个入口；桥拦截后墨不会接话茬。
+- **MCP 提问**：dsh 需要拍板时调用 `ask_user` 工具，桥把问题转成 QQ 消息，你回一句话，**dsh 在同一进程里继续**。
+- **默认不限时**：模型估不准自己的耗时，所以不设时间预算；`/dsh peek` 看进度、`/dsh stop` 秒级停止。
+- **交付与救回**：dsh 用 `present` 声明交付物 → 桥打包发 QQ；任务被停/异常终止时，本轮新产出的文件也会被「救回」发出。
+- **Office 文档**：配合 dsh 的 `skill-office` 技能，读/写 Word、PPT、Excel。
+- **实验功能（可选）**：设置里临时开启 24 小时，期间墨可自主建/切话题、派活（二次确认、期间 `/dsh` 禁用）。
+
+## 架构
+
+```
+QQ ──► MaiBot 宿主 ──► 本插件（桥）
+                          │  1) 解析 /dsh，管理话题（topics.json）
+                          │  2) 起子进程：dsh --profile headless --json --session-id <id> -
+                          │  3) 读 dsh 的 JSON 事件流（步骤/工具/结果），转发或回灌给墨
+                          │  4) 扫工作区 ipc/questions/ ← ask MCP 服务写的问题 → 发 QQ
+                          ▼
+              话题工作目录（AGENTS.md、uploads/、ipc/、产出文件）
+```
+
+**dsh 侧需要挂几个插件**（否则提问 / 交付 / Office 不可用）：
+
+| 插件 | 作用 |
+|---|---|
+| `@deepseek-ai/dsh-mcp-client` | 连本仓库的 `scripts/dsh_ask_mcp.py`，提供 `ask_user` 工具 |
+| `@deepseek-ai/dsh-tool-present` | dsh 用 `present` 声明交付文件 |
+| `@deepseek-ai/dsh-workspace-changes` | 记录每轮工作区变更 |
+| `@deepseek-ai/dsh-skill-office` | Word / PPT / Excel 技能 |
+
+示例补丁见 [`profiles/headless.cordis.patch.yml`](profiles/headless.cordis.patch.yml)。
 
 ## 兼容性
 
-实测环境（manifest 声明范围据此填写，未验证的版本不虚标）：
-
-- **MaiBot 宿主**：1.2.3 实测通过；声明范围 `1.2.0 ~ 1.2.99`。
-- **maibot-plugin-sdk**：2.8.0 实测通过；声明范围 `2.0.0 ~ 2.8.99`。
-- **Python**：3.12+。Windows Server 2022 / Windows 10+ 已验证；类 Unix 为实验性支持。
-
-超出声明范围（如宿主 2.x、SDK 2.9+）未经实测，不保证可用。
-
-## 功能
-
-- **命令** `/dsh [--timeout 秒] <任务>`：把任务外包给 dsh 在后台执行，命令立即回执。
-- **工具** `dsh_run`：麦麦（Planner）在聊天中判断「这活该外包」时自主调用。
-- **工具** `schedule_task` / `schedule_list` / `schedule_update` / `schedule_cancel`：让麦麦建 / 看 / 改 / 删**定时任务**。
-- **交付物**：dsh 用 `present` 声明的文件，桥自动打包发回当前群（单文件直发、多文件 zip）。
-
-## 两轮协议：时长由 dsh 自己定
-
-派活方（麦麦）给的秒数只作**参考建议**，真正决定「做什么、花多久」的是 dsh：
-
-1. **规划轮**：桥先把任务交给 dsh，让它只做规划——解析意图、给出操作计划，并自报一个「最大秒数」（要求输出 JSON：`{"plan": "...", "max_seconds": N}`）。发起方的建议值会写进这一轮提示，**仅供它参考**。
-2. **执行轮**：桥拿到 dsh 自报的时长，用它作为超时发起真正的执行。
-3. 自报时长会被夹在 `[dsh.timeout_min, dsh.timeout_max]` 之间；规划轮本身用较短超时（最多 60s），失败则回退发起方建议值。
-
-这样派活方定「愿望」、干活方定「现实」，既避免拍一个过紧的死超时，也逼 dsh「先想清楚怎么做」。
-
-## 结果回传（四段）
-
-1. **过程**：合并转发卡片，按「工具调用 / 输出 / 最终」分节点，连续输出合并、工具节点精简为「工具名 + 一行参数 + 耗时」。
-2. **结果文件**：完成后把最终文本写成 `result-<时间>.md`，经 **NapCat** 上传到当前群 / 私聊。
-3. **交付物**：dsh 通过 `present` 声明的文件，桥收集后打包（单文件直发、多文件 zip），一并发回群，并回一句「📦 交付物（N 个）：…」。
-4. **回灌**：把结果摘要通过 `maisaka.context.append` 注入麦麦上下文（长度受 `context_inject_chars` 限制），让它「知道」dsh 查回了什么。
-
-> ⚠️ **适配器边界**：结果文件 / 交付物上传依赖 **NapCat** 的文件接口（`adapter.napcat.file.upload_group_file` / `upload_private_file`）。**非 NapCat 适配器**（如 SnowLuma）会自动回退为转发卡片，不发文件。
-
-## 定时任务（桥内置调度）
-
-桥自带一个轻量调度器（轮询 10s），任务持久化在插件 data 目录的 `scheduled_tasks.json`，重启自动载入。
-
-- **麦麦侧**：`schedule_task` 建任务，四种时间规则任选其一——`after_seconds`（N 秒后一次）/ `every_seconds`（每 N 秒重复）/ `at`（ISO 时刻）/ `cron`（5 字段，如 `0 9 * * 1-5`）。
-- **dsh 侧自建**：dsh 在它的工作目录写 `schedule-requests/<名>.json`（`{"title","prompt",时间规则}`），桥在任务收尾时扫描并建任务，随后移入 `.done/`（幂等）。
-  - 该约定通过 dsh 的全局 `AGENTS.md`（`$DSH_HOME/AGENTS.md`）告知模型；`schedule-requests` 目录**不计入交付物**。
-- 到点后，桥把任务的 prompt 交给 dsh 执行，**走同一条链**回群；触发时若正忙会顺延 60s，避免与手动任务打架。
-
-## 依赖
-
-- 服务器安装 **Node.js 22+** 与 **dsh**（`npm i -g @deepseek-ai/dsh`）。
-- 需要 **`DEEPSEEK_API_KEY`**（dsh 不产算力）。
-- 若要让麦麦产出的插件自动上线，需配合 [插件安装审批器](https://github.com/ji-or-ji/maibot-plugin-installer)。
+- **MaiBot**：1.3.x 实测通过（1.2.x 为上游声明范围，未逐版本验证）。
+- **maibot-plugin-sdk**：2.x（`maibot_sdk.types` 提供 `HookMode/HookOrder/ErrorPolicy`）。
+- **dsh**：0.2.x（headless profile）。
+- **Python**：3.11+。
+- **适配器**：发文件依赖 NapCat 的文件接口（`adapter.napcat.file.upload_private_file` / `upload_group_file`）；其它适配器会自动跳过文件，只发文字。
+- **平台**：Linux 为开发环境；Windows 亦支持（`taskkill /T /F` 终止进程树）。
 
 ## 安装
 
-把本仓库目录放进麦麦的 `plugins/` 下（目录名建议 `maibot-dsh-bridge`），重载麦麦。
+1. 把本仓库目录放进麦麦的 `plugins/`（目录名建议 `maibot-dsh-bridge`）。
+2. 复制 `config.toml.example` 为 `config.toml`，填 `workspace_dir`、QQ 白名单等。
+3. 服务器上装好 `dsh`（`npm i -g @deepseek-ai/dsh`）与 `DEEPSEEK_API_KEY`。
+4. 给 dsh 的 headless profile 加补丁（见 `profiles/headless.cordis.patch.yml`），并把
+   `scripts/dsh_ask_mcp.py` 放到 `<MAIBOT_HOME>/scripts/`。
+5. 若要用 Office 技能，另建一个装了 `python-docx / python-pptx / openpyxl` 的 venv，
+   并把路径写进话题工作区 `AGENTS.md` 的 Office 段落（默认写的是 `<office-venv 路径>/bin/python`）。
+6. 重载麦麦。首次 `/dsh <任务>` 会自动建话题。
 
-## 配置流程（三步）
+## 命令（全部在 `/dsh` 下）
 
-1. **装引擎**：服务器装 Node 22+ 与 dsh。
-2. **给密钥**：设置环境变量 `DEEPSEEK_API_KEY`（**推荐**，插件自动读取）；也可填进 `config.toml` 的 `[dsh].api_key`（不推荐，勿提交）。
-3. **启用**：把 `config.toml.example` 复制为 `config.toml`，将 `[plugin].enabled` 设为 `true`，重载麦麦。
+| 命令 | 作用 |
+|---|---|
+| `/dsh <任务>` | 在当前话题派活（没有话题会自动建） |
+| `/dsh #3 <任务>` | 指定话题派活 |
+| `/dsh peek` / `/dsh 状态` / `/dsh 进展` | 看它现在在干什么（步骤 / 正在跑的工具 / 最近动静） |
+| `/dsh stop` / `/dsh 停止` | 立刻停止当前任务（已产出文件会尽量发回） |
+| `/dsh stop 全部` | 连排队中的任务一起清掉 |
+| `/dsh new` | 新建话题并设为当前 |
+| `/dsh set <名>` | 改当前话题名 |
+| `/dsh del [#3]` | 归档（7 天后自动删除，期间可恢复） |
+| `/dsh restore #3` | 恢复归档话题 |
+| `/dsh list` / `/dsh 话题 #3` | 列出 / 查看并切换话题 |
+| `/dsh help` | 用法 |
 
-可选：`[permission].mode` 选择 `whitelist`（默认，仅名单内可用）或 `blacklist`（名单内不可用、其余放行）。白名单模式在 `allowed_users` / `allowed_groups` 填 ID，**留空表示拒绝所有人**（fail-closed）；黑名单模式在 `blocked_users` / `blocked_groups` 填要拦的 ID。群聊里若取不到发言人 ID，用群 ID 兜底。名单同时约束 `/dsh` 命令、`dsh_run` 工具与 `schedule_task/update/cancel` 三个工具。把 `[permission].enabled` 设为 `false` 等同于**放开给所有人**（不推荐）。`dsh_run` 由麦麦的 Planner 决定调用。
+任务末尾加 `(all)` 可看完整合并转发过程；以 `-- ` 开头的正文强制当任务；`/dsh --timeout 600 <任务>` 可给单次任务设上限。
 
-> ⚠️ **隐私提示**：被外包的任务文本（以及 dsh 执行时读到的上下文）会经 **dsh 发往 DeepSeek 的推理服务**。群内内容敏感时，请启用前知晓。
+## 配置要点
 
-## 配套 dsh 插件推荐
+完整项见 `config.toml.example`。几个容易误解的：
 
-dsh 的能力按「plugin bundle」叠进 profile（改 `$DSH_HOME/profiles/<名>/cordis.patch.yml`，用 `- insert:` 包一层；`$DSH_HOME/profiles/<名>/package.json` 的 `dsh.profile.bundles` 也可挂 bundle 型插件）。以下是本桥实测推荐的几项，**标注了是否需要额外适配**：
+- `dsh.timeout_default = 0`：**0 = 不限时**（默认）。想设上限填秒数，或用 `/dsh --timeout N`。
+- `dsh.heartbeat_seconds = 600`：这是**死锁兜底**（连续无输出且进程静默才判卡死），不是时间预算。
+- `dsh.salvage_on_fail = true`：任务被停/异常结束时，把本轮新产出的文件救回发出。
+- `topic.enabled / topic.private_only`：话题模式及其适用范围（默认只私聊）。
+- `experimental.agent_tools`：实验功能总开关（还需在 QQ 里 `/dsh 实验开启` + 二次确认）。
 
-| 插件 | 作用 | 是否需适配 |
-|---|---|---|
-| `@deepseek-ai/dsh-tool-present` | 声明交付文件，让产出能交出来 | 装上即用 |
-| `@deepseek-ai/dsh-workspace-changes` | 记录每轮工作区文件变更 | 装上即用 |
-| `@deepseek-ai/dsh-skill-office` | Word / PPT / Excel 读写 + 结构检查 | **需**：指定 Python 解释器（3.9+）并装 `python-docx` `python-pptx` `openpyxl` |
-| `@deepseek-ai/dsh-mcp-client` | 连外部 MCP 服务器、注册其工具 | **需**：为每台服务器填一条配置（`serverName` + `transport` + `url`/`headers`） |
+## 目录结构
 
-> 注：官方 `@deepseek-ai/dsh-experimental-schedule-bundle` 的定时能力**要求 Web Session controller，headless profile 不适用**——本桥用内置调度器替代（见「定时任务」）。
-
-**office 的 Python 从哪里指**：office skill 会遵循「用户或 `AGENTS.md` 明确指定的环境」。所以在 `$DSH_HOME/AGENTS.md` 里写明用哪个 Python 即可，**无需官方随包 payload**：
-
-```markdown
-## Office 文档工作
-用 Python：`<你的 Python 3.9+ 绝对路径>`（已装 python-docx / python-pptx / openpyxl）。
+```
+.
+├── plugin.py                       # 桥本体（单文件插件）
+├── _manifest.json                  # 插件清单（id/版本/兼容范围）
+├── config.toml.example             # 配置示例
+├── profiles/headless.cordis.patch.yml  # dsh headless profile 补丁示例
+├── scripts/dsh_ask_mcp.py          # MCP stdio 服务：ask_user 工具
+├── docs/使用说明书.md               # 面向使用者的完整说明
+├── docs/实现方案.md                 # 设计取舍与实施记录
+└── tests/bridge_harness.py         # 集成测试（假 Host + 真 dsh）
 ```
 
-## 主要配置项
+## 测试
 
-| 项 | 说明 |
-|---|---|
-| `[dsh].command` | dsh 可执行命令，如 `dsh` 或 `C:\nodejs\dsh.cmd` |
-| `[dsh].timeout_default` | 发起方未给秒数时的默认**建议值**（秒） |
-| `[dsh].timeout_min/max` | dsh 自报时长的**夹取范围**（秒），默认 60~1800 |
-| `[dsh].heartbeat_seconds` | 无进展心跳：三信号（输出/进程CPU/子进程）全静超此秒数判卡死 |
-| `[dsh].context_inject_chars` | 回灌进麦麦上下文的结果摘要上限（默认 600，越小越省上下文） |
-| `[dsh].deliver_max_files` | 单次任务最多打包发送的交付物数量（默认 8） |
-| `[dsh].allow_self_schedule` | 是否允许 dsh 经 schedule-requests 自建定时任务（默认开；关则禁止） |
-| `[dsh].display_mode` | `forward`（合并转发）或 `text` |
-| `[dsh].permission_mode` | dsh 沙箱模式：`danger-full-access`（默认，git/npm 可用）/ `workspace-write` / `read-only` |
-| `[permission].mode` | `whitelist`（默认，仅名单内可用）或 `blacklist`（名单内不可用，其余放行） |
-| `[permission].allowed_users` | 白名单用户 ID，留空且白名单模式=拒绝所有人 |
-| `[permission].allowed_groups` | 白名单群 ID，群聊里取不到发言人 ID 时兜底 |
-| `[permission].blocked_users` | 黑名单用户 ID（仅 `blacklist` 模式生效） |
-| `[permission].blocked_groups` | 黑名单群 ID（仅 `blacklist` 模式生效） |
-| `[permission].enforce_tools` | 是否对 `dsh_run` / `schedule_*` 工具也施加名单（默认开；关则工具面放开，风险自负） |
+`tests/bridge_harness.py` 用一个假 Host 驱动真插件、并起真 dsh，覆盖话题、归档、提问（MCP/文件两种通道）、
+实验功能、停止/看进展、救回等 20 个用例：
 
-## 安全边界
+```bash
+BRIDGE_PLUGIN_DIR=/path/to/maibot-dsh-bridge \
+BRIDGE_DSH_ARGS="--profile headless" \
+python tests/bridge_harness.py
+```
 
-- 每个聊天流一个独立工作区（`ctx.paths.data_dir/workspace/<stream>/`），群间不串。
-- dsh 自报时长被夹在上限内 + **无进展心跳** + **分层终止**（先温和，宽限后 `taskkill /T` 杀整棵进程树）。
-- 任务白名单前缀（`[dsh].allowed_prefixes`，留空不限制）。
-- API Key 优先走环境变量，避免明文入库。
-- 若给 dsh 挂了高权限 MCP（如可执行命令的服务器），等于放宽了边界，请自行评估。
+## 已知限制
 
-### 关于子进程、文件与网络（供审查参考）
-
-- **子进程**：本插件以子进程方式调用 `dsh`（`subprocess`），这是它的核心用途——把任务交给 dsh 引擎执行。命令取自配置项 `[dsh].command`（默认 `dsh`），**不使用 `shell=True`、不拼接用户输入成命令**。
-  - **沙箱模式**：桥默认给 dsh 注入 `DSH_PERMISSION_MODE=danger-full-access`。原因：Windows 上 dsh 的 `workspace-write` 使用 ACL 受限令牌，`git clone` 会因 `git-remote-https` 无法创建命名管道而失败（`cannot create standard input pipe ... Permission denied`）。任务已由 `[permission]` 名单限制在授权用户/群内，工作目录也按聊天流隔离；若需要更严边界，可把 `[dsh].permission_mode` 改为 `workspace-write`，代价是 git / npm 等命令不可用。
-  - **注意**：`_spawn` 在 Windows 下经 `cmd.exe /c` 启动，`[dsh].command` 与 `[dsh].extra_args` 实质会被 shell 解析——**这两项属管理员可信配置，不得由聊天内容产生**。
-  - **平台**：Windows 与类 Unix 均已支持。Windows 经 `cmd.exe /c` 启动、以 `taskkill /T` 终止整棵进程树；类 Unix 经 `/bin/sh -c` 启动、子进程独立进程组，终止时用 `killpg` 整体干掉。
-  - 说明：最初只在 Windows 上验证过（作者手边没有可跑 WSL / Docker / Linux 的环境），所以起步阶段**没打算适配 Linux**；后来调研发现有不少用户跑在 Linux 上，于是补上了跨平台支持。**非 Windows 环境请自行评估适配性。**
-- **权限**：`/dsh`、`dsh_run`、`schedule_*` 均受 `[permission]` 约束。`mode = "whitelist"`（默认）只放行 `allowed_users` / `allowed_groups`；`mode = "blacklist"` 拦截 `blocked_users` / `blocked_groups`，其余放行。用户 ID 与群 ID 会先归一化为纯数字再比较，兼容 `qq:` 前缀。白名单留空 = 拒绝所有人。若不需要对工具收紧，可将 `[permission].enforce_tools` 设为 `false`（工具面放开，风险自负）。
-- **dsh 自建任务**：`schedule-requests` 通道可用 `[dsh].allow_self_schedule` 关掉（默认开）。
-- **文件写入**：仅写插件数据目录 `ctx.paths.data_dir`；每个聊天流的工作区名做**白名单字符清洗**（仅 `A-Za-z0-9_-`），杜绝 `..` 越位；`schedule-requests/` 内部请求消费后移入 `.done/`。
-- **交付物**：来自 dsh 通过 `present` 声明的文件，逐条校验为「**本流工作区内存在的普通文件**」（resolve 后做 containment）后才发送；`schedule-requests` 等内部路径排除。
-- **网络**：本插件自身**不主动发起外部请求**，不上传聊天记录 / 用户 ID / 群 ID / 图片 / 配置 / token。dsh 是否联网取决于用户自己的 dsh 配置与任务内容。
-- **结果文件 / 交付物上传**：依赖 NapCat 的 `adapter.napcat.file.*`，属 **best-effort**——非 NapCat 适配器回退为转发卡片，该接口不属插件承诺的稳定能力。
-- **配置**：仓库不提交 `config.toml`（只给 `config.toml.example` + `.gitignore`）。
-
-### dsh 自建定时任务（设计说明，供审查参考）
-
-- dsh 可在其工作区写 `schedule-requests/*.json`，桥在任务收尾时扫描并转为定时任务（移入 `.done/`，幂等）。这是**有意提供的能力**——让 dsh 能把「稍后再做」的事排进调度。
-- 该通道以「用户消息触发 dsh 任务」为前提；需要更紧时，可在 `[permission]` 收紧可用用户。
+- 全局串行：同一时刻只跑一个 dsh 任务，第二个进队列。
+- 会话写锁：同一话题的会话被 dsh Web GUI 打开时，桥无法续跑（会提示先关掉）。
+- 文件上传依赖 NapCat 接口；其它适配器只发文字。
+- 话题细节、实现取舍见 `docs/` 下两份文档。
 
 ## 许可
 
-MIT
+MIT，见 [LICENSE](LICENSE)。本仓库为 [ji-or-ji/maibot-dsh-bridge](https://github.com/ji-or-ji/maibot-dsh-bridge) 的派生版本，
+原版权归 ji-or-ji；fork 内的修改同样以 MIT 发布。

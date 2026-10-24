@@ -1,55 +1,60 @@
+# 麦麦×dsh 桥 —— 配置示例
+# 用法：复制为 config.toml（与本文件同目录），按需修改；config.toml 已在 .gitignore 里，不会被提交。
+
 [plugin]
 enabled = true
-config_version = "0.6.1"
+config_version = "0.11.0"
 
 [dsh]
-# dsh 可执行命令（装好后通常是 dsh；Windows 全局装可能在 C:\nodejs\dsh.cmd）
 command = "dsh"
-# 固定附加参数；桥会自动追加 --json
-extra_args = "--profile headless"
-# dsh 工作目录；留空则用插件 data 目录下的 workspace/<stream>
-workspace_dir = ""
-# 超时：dsh 在规划轮自报时长，这里只给夹取范围与默认建议值
-timeout_default = 300
-timeout_min = 60
-timeout_max = 1800
-# 无进展心跳：输出/进程CPU/子进程三信号全静超过此秒数即判卡死
-heartbeat_seconds = 180
-# 重复检测：同一行连续出现达到此次数即判循环
-repeat_threshold = 25
-# 温和终止后的宽限等待（秒），超时才强杀进程树
-grace_seconds = 15
-# 文本回退时最大字符数
+extra_args = "--profile headless"          # 桥会自动追加 --json
+workspace_dir = "<工作区根目录>"             # 例：/data/dsh-work/mai；留空则用麦麦 data 目录下的 workspace
+# ── 时间策略：默认不设时间预算（模型估不准自己的耗时，靠用户 /dsh stop 手动停）──
+timeout_default = 0                         # 0 = 不限时（默认）
+timeout_min = 0                             # 0 = 不设下限
+timeout_max = 0                             # 0 = 无上限；想封顶可填秒数
+# 死锁兜底（不是时间预算）：连续这么久没有任何输出、进程也静默才判卡死
+heartbeat_seconds = 600
+repeat_threshold = 25                       # 同一行输出重复达到此次数 → 判死循环
+grace_seconds = 15                          # 先温和 terminate，超过这么久才强杀进程树
 max_output_chars = 8000
-# 合并转发最多节点数 / 单节点最大字符数
 max_forward_nodes = 40
 node_max_chars = 1500
-# 回传形态：forward=合并转发 / text=纯文本
-display_mode = "forward"
-# 回灌进麦麦上下文的结果摘要上限（越小越省上下文）
-context_inject_chars = 600
-# 单次任务最多打包发送的交付物数量
-deliver_max_files = 8
-# 是否允许 dsh 经 schedule-requests 自建定时任务（关则禁止，风险自负）
-allow_self_schedule = true
-# 存放 API Key 的环境变量名
+display_mode = "forward"                    # forward=合并转发 / text=纯文本
+silent_inject_chars = 6000                  # 静默模式下回灌给麦麦的结果上限
+context_inject_chars = 600                  # 回灌摘要上限（墨唯一出口时用 silent_inject_chars）
+deliver_max_files = 8                       # present 交付物一次最多发几个
+# ── 异常/手动停止时的「救回」：把本轮新产出的文件也发出去，别让活白干 ──
+salvage_on_fail = true
+salvage_max_mb = 20                         # 单个救回文件大小上限
+allow_self_schedule = true                  # 允许 dsh 用 schedule-requests/ 自建定时任务
 api_key_env = "DEEPSEEK_API_KEY"
-# DeepSeek API Key（明文；留空则用系统环境变量；勿分享本文件）
-api_key = ""
-# dsh 沙箱权限模式：danger-full-access（默认，git clone / npm 等依赖子进程管道的命令可用）
-# workspace-write / read-only 更严，但 Windows ACL 沙箱会拦住 git 的命名管道，导致 clone 失败
-permission_mode = "danger-full-access"
+api_key = ""                                # 留空则用系统环境变量（勿把 key 提交进仓库）
+permission_mode = "danger-full-access"      # workspace-write / read-only / danger-full-access
 
 [permission]
 enabled = true
-# 名单模式：whitelist=仅名单内可用（默认，安全）；blacklist=名单内不可用、其余放行
-mode = "whitelist"
-# 白名单用户 ID，逗号分隔；白名单模式下留空则拒绝所有人（fail-closed）
-allowed_users = ""
-# 白名单群 ID，逗号分隔；群聊里取不到发言人 ID 时作为兜底
+mode = "whitelist"                          # whitelist / blacklist
+allowed_users = "<你的QQ号>"                 # 多个用英文逗号分隔
 allowed_groups = ""
-# 黑名单用户 / 群 ID，逗号分隔；仅 mode = "blacklist" 时生效
 blocked_users = ""
 blocked_groups = ""
-# 是否对 dsh_run / schedule_* 工具也施加名单（关=工具面放开，风险自负）
-enforce_tools = true
+enforce_tools = true                        # 工具（dsh_run 等）也走同一套白名单
+
+[topic]
+# 话题模式：每个话题 = 一条持久 dsh 会话 + 独立工作目录 + 编号（#1、#2…）
+enabled = true
+private_only = true                         # 只在私聊启用（群聊保持旧行为）
+idle_hours = 24                             # 闲置超过这么多小时，下次派活自动新开话题
+name_max_chars = 12
+queue_max = 3                               # 全局串行，排队上限
+archive_keep_days = 7                       # 归档保留天数，到期自动删目录并释放编号
+archive_readonly = true                     # 归档话题只读，必须先 /dsh restore #N
+
+[experimental]
+# 【实验性】允许墨自主调用话题/派活工具（不用你打 /dsh 命令）。
+# 打开后还要在 QQ 里 /dsh 实验开启 + 二次确认，最长只能开启 24 小时，到期自动关闭；
+# 期间 /dsh 命令会被临时禁用（/dsh stop、/dsh peek 仍可用）。
+agent_tools = false
+agent_tools_hours = 24
+agent_confirm_ttl_minutes = 10
