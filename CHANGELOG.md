@@ -3,6 +3,15 @@
 本仓库是 [ji-or-ji/maibot-dsh-bridge](https://github.com/ji-or-ji/maibot-dsh-bridge) 的派生版本。
 上游历史见原仓库；下面是本 fork 相对上游 v0.6.1 的改动。
 
+## v0.11.3 — 结果直接发到聊天
+
+- 任务成功后，桥把 dsh 的最终答复**直接发到聊天**（`✅ dsh 完成（#N）…`）；
+  内容超过 `direct_result_chars`（默认 1500）时先发预览，再把完整内容写成 `.md` 文件发出。
+- 空输出也发回执（`✅ 任务完成，但没有文字输出`），不再出现「peek 说成功、聊天没动静」。
+- 新增配置 `dsh.direct_result`（默认 true）与 `dsh.direct_result_chars`；关掉则恢复"只回灌给墨"。
+- 原因说明：`maisaka.context.append` 只是往墨的上下文里加内容，不一定会触发墨开口，所以静默模式下结果容易丢。
+- 集成测试新增用例 23（结果直发 + 空输出回执），共 23 例通过。
+
 ## v0.11.2 — DSH_HOME 隔离（从根上避免会话写锁）
 
 - 新增 `dsh.dsh_home`：给桥派活的 dsh 子进程设置独立的 `DSH_HOME`，headless 与 dsh Web GUI

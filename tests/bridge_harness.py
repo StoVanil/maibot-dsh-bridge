@@ -531,6 +531,42 @@ async def main():
         p.config.dsh.extra_args = orig_extra
         p.config.dsh.dsh_home = ""
 
+    print("\n===== 23) 任务成功 → 结果直接发到聊天（不再只回灌给墨） =====")
+    fake_ok = Path("/tmp/fake-dsh-ok")
+    fake_ok.write_text(
+        "#!/bin/sh\n"
+        'echo \'{"type":"session","sessionId":"session-ok-1"}\'\n'
+        'echo \'{"type":"final","text":"这是 dsh 的最终结果"}\'\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_ok.chmod(0o755)
+    orig_cmd, orig_extra = p.config.dsh.command, p.config.dsh.extra_args
+    p.config.dsh.command = str(fake_ok)
+    p.config.dsh.extra_args = ""
+    try:
+        p._history.clear()
+        p.ctx.send.clear()
+        await p._run_and_report("测试：给个结果", STREAM, 0, {"user_id": UID})
+        joined = p.ctx.send.joined()
+        print("[输出]", joined[:220].replace("\n", " / "))
+        assert "✅ dsh 完成" in joined, f"结果没直接发出来：{joined}"
+        assert "这是 dsh 的最终结果" in joined, joined
+        # 空输出也要有回执，不能静默
+        fake_empty = Path("/tmp/fake-dsh-empty")
+        fake_empty.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_empty.chmod(0o755)
+        p.config.dsh.command = str(fake_empty)
+        p._history.clear()
+        p.ctx.send.clear()
+        await p._run_and_report("测试：啥也不说", STREAM, 0, {"user_id": UID})
+        joined2 = p.ctx.send.joined()
+        print("[空输出]", joined2[:180].replace("\n", " / "))
+        assert "没有文字输出" in joined2, f"空输出静默了：{joined2}"
+    finally:
+        p.config.dsh.command = orig_cmd
+        p.config.dsh.extra_args = orig_extra
+
     print("\n===== 全部通过 =====")
     srv.shutdown()
 

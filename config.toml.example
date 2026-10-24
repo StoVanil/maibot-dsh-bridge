@@ -28,6 +28,9 @@ context_inject_chars = 600                  # 回灌摘要上限（墨唯一出�
 deliver_max_files = 8                       # present 交付物一次最多发几个
 # ── 异常/手动停止时的「救回」：把本轮新产出的文件也发出去，别让活白干 ──
 salvage_on_fail = true
+# 任务完成后把最终结果直接发到聊天（关掉=只回灌给墨；实测墨不一定接话）
+direct_result = true
+direct_result_chars = 1500              # 直发时聊天里最多显示多少字，超出改发 .md 文件
 salvage_max_mb = 20                         # 单个救回文件大小上限
 allow_self_schedule = true                  # 允许 dsh 用 schedule-requests/ 自建定时任务
 api_key_env = "DEEPSEEK_API_KEY"

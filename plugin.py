@@ -199,6 +199,19 @@ class DshConfig(PluginConfigBase):
         ge=100,
         le=5000,
     )
+    direct_result: bool = Field(
+        default=True,
+        description=(
+            "任务完成后把 dsh 的最终结果直接发到聊天。关闭后只回灌给墨、由墨组织回复"
+            "（实测墨不一定接话，容易出现「任务成功但聊天里没动静」）"
+        ),
+    )
+    direct_result_chars: int = Field(
+        default=1500,
+        description="直接回传时聊天里最多显示多少字符；超出部分写成 .md 文件发出去",
+        ge=200,
+        le=20000,
+    )
     allow_self_schedule: bool = Field(
         default=True,
         description="是否允许 dsh 经 schedule-requests 自建定时任务（默认开；关则禁止，风险自负）",
@@ -2399,6 +2412,7 @@ class DshBridgePlugin(MaiBotPlugin):
     ) -> int:
         conf = self.config.dsh
         header = self._REASON_MSG.get(reason or "", "")
+        direct_truncated = False
         if reason == "failed":
             # 把 dsh 的实际报错带出来（否则用户只看到"执行失败"四个字）
             err = self._state_error_text(state).replace("\n", " ").strip()[:180]
@@ -2420,6 +2434,19 @@ class DshBridgePlugin(MaiBotPlugin):
             text_to_send = f"dsh：{receipt}"
         elif header:
             text_to_send = f"dsh：{header}"
+        elif conf.direct_result:
+            # 直接把结果发到聊天：只回灌给墨的话，墨不一定会开口，用户就什么都看不到
+            label = f"（{self._run_label}）" if self._run_label else ""
+            if final_text:
+                limit = int(conf.direct_result_chars)
+                body = final_text[:limit]
+                truncated = len(final_text) > limit
+                text_to_send = f"✅ dsh 完成{label}：\n{body}"
+                if truncated:
+                    text_to_send += "\n…（完整内容见下一条 .md 文件）"
+                direct_truncated = truncated
+            else:
+                text_to_send = f"dsh：✅ 任务完成{label}，但没有文字输出（可能只改了文件）。"
         else:
             text_to_send = ""
 
@@ -2429,12 +2456,17 @@ class DshBridgePlugin(MaiBotPlugin):
             except Exception:  # noqa: BLE001
                 self.ctx.logger.warning("dsh 回执发送失败", exc_info=True)
 
-        # 只在本地留一份文本转录（便于排查），不再发到聊天里。
-        # 聊天里只发 dsh 自己通过 present 声明的交付文件（见下方 _send_deliverables）。
+        # 本地留一份文本转录（便于排查）；被截断时把完整内容当文件发出去
+        result_path: Optional[str] = None
         try:
-            self._write_result_file(state)
+            result_path = self._write_result_file(state)
         except Exception:  # noqa: BLE001
             self.ctx.logger.warning("写结果转录失败", exc_info=True)
+        if direct_truncated and result_path:
+            try:
+                await self._send_result_file(result_path, ctx or {})
+            except Exception:  # noqa: BLE001
+                self.ctx.logger.warning("发送完整结果文件失败", exc_info=True)
 
         # 提问等待中先不回灌：让墨别抢着回答 dsh 自己的问题，答案要用户给
         if notify:
@@ -2888,9 +2920,8 @@ class DshBridgePlugin(MaiBotPlugin):
                 )
             except Exception:  # noqa: BLE001
                 pass
-        elif resume and not reason:
-            # 续跑是用户亲手回答后触发的，他正等着结果：这里直接把 dsh 的最终回答发出来，
-            # 不再只回灌给墨（否则聊天里可能一直没动静）。
+        elif resume and not reason and not self.config.dsh.direct_result:
+            # direct_result 关闭时：续跑结果单独补一条（否则墨不一定会接话，用户看不到）
             final_text = state.final_copy().strip()
             if final_text:
                 try:
