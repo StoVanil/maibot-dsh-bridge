@@ -47,7 +47,7 @@ blocked_groups = ""
 enforce_tools = true                        # 工具（dsh_run 等）也走同一套白名单
 # ── 权限审批：未授权的人发 /dsh 会先发一张申请单，审批人批准后可用 ──
 approval_enabled = true
-approvers = ""                              # 审批人 QQ，逗号分隔；留空=用 allowed_users
+approvers = ""                              # 审批人 QQ，逗号分隔；留空=只认白名单第一个（主人）
 approval_hours = 24                         # 批准后授权有效小时数；0=永久
 approval_ttl_minutes = 30                   # 申请单有效期（分钟）
 

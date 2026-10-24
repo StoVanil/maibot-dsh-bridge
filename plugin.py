@@ -206,7 +206,7 @@ class PermissionConfig(PluginConfigBase):
     )
     approvers: str = Field(
         default="",
-        description="审批人 QQ，逗号分隔；留空=用白名单里的人。审批人可发 批准/拒绝/审批/撤销 子指令",
+        description="审批人 QQ，逗号分隔；留空=只认白名单里的第一个人（视为主人）。审批人可发 批准/拒绝/审批/撤销 子指令",
     )
     approval_hours: int = Field(
         default=24,
@@ -2054,8 +2054,12 @@ class DshBridgePlugin(MaiBotPlugin):
         self._save_json_dict(self._user_streams_file(), self._user_streams)
 
     def _approver_ids(self) -> set[str]:
+        """审批人名单；approvers 留空时只认白名单里的第一个人（视为主人）。"""
         perm = self.config.permission
-        raw = (perm.approvers or "").strip() or (perm.allowed_users or "")
+        raw = (perm.approvers or "").strip()
+        if not raw:
+            first = [x for x in (perm.allowed_users or "").split(",") if x.strip()]
+            raw = first[0] if first else ""
         return {self._only_digits(x) for x in raw.split(",") if self._only_digits(x)}
 
     def _is_approver(self, kwargs: dict[str, Any]) -> bool:
