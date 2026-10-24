@@ -42,8 +42,7 @@ QQ ──► MaiBot 宿主 ──► 本插件（桥）
 
 | 插件 | 作用 |
 |---|---|
-| `@deepseek-ai/dsh-mcp-client`（serverName `ask`） | 连 `scripts/dsh_ask_mcp.py`，提供 `ask_user` 工具 |
-| `@deepseek-ai/dsh-mcp-client`（serverName `files`） | 连 `scripts/dsh_files_mcp.py`，提供 `files_*` 文件管理工具 |
+| `@deepseek-ai/dsh-mcp-client`（serverName `ask`） | 连 `scripts/dsh_ask_mcp.py`，提供 `ask_user` 提问工具，**并合并提供 `files_*` 文件柜工具**（`mcp__ask__files_list` 等） |
 | `@deepseek-ai/dsh-tool-present` | dsh 用 `present` 声明交付文件 |
 | `@deepseek-ai/dsh-workspace-changes` | 记录每轮工作区变更 |
 | `@deepseek-ai/dsh-skill-office` | Word / PPT / Excel 技能 |
@@ -127,8 +126,8 @@ QQ ──► MaiBot 宿主 ──► 本插件（桥）
 ├── _manifest.json                     # 插件清单（id/版本/兼容范围）
 ├── config.toml.example                # 配置示例
 ├── profiles/headless.cordis.patch.yml # dsh headless profile 补丁示例
-├── scripts/dsh_ask_mcp.py             # MCP stdio 服务：ask_user 提问工具
-├── scripts/dsh_files_mcp.py           # MCP stdio 服务：文件柜管理工具（按 QQ 隔离）
+├── scripts/dsh_ask_mcp.py             # MCP stdio 服务：ask_user + 文件柜 files_* 工具（合并）
+├── scripts/dsh_files_mcp.py           # 文件柜工具实现（被 ask server import；也可单独跑/单测）
 ├── docs/使用说明书.md                  # 面向使用者的完整说明（含命令/FAQ/文件柜/权限审批）
 ├── docs/实现方案.md                    # 设计取舍与实施记录
 ├── docs/帮助文案.md                    # /dsh help 分场景文案（可直接嵌入）

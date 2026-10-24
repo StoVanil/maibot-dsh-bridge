@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
 import shutil
 import stat
@@ -243,17 +244,43 @@ class FilesConfig:
             limit = DEFAULT_MAX_READ_BYTES
         self.max_read_bytes = limit
 
+    @staticmethod
+    def _read_context_file():
+        """读桥写的「本任务上下文」文件。
+
+        dsh 的 mcp-client 在 spawn 子进程前会**剥掉 DSH_ 开头的环境变量**（只留 PATH 等），
+        所以「本次任务属于哪个 QQ」这种每轮变化的信息没法靠 env 继承，改由桥每轮写进
+        工作区的 ``ipc/files-context.json``：``{"owner_qq": "...", "root": "...", "superusers": [...]}``。
+        """
+        context_path = os.environ.get("DSH_FILES_CONTEXT", "").strip()
+        candidates = [pathlib.Path(context_path)] if context_path else []
+        candidates.append(pathlib.Path.cwd() / "ipc" / "files-context.json")
+        for fp in candidates:
+            try:
+                if fp.is_file():
+                    data = json.loads(fp.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        return data
+            except Exception:  # noqa: BLE001
+                continue
+        return {}
+
     @classmethod
     def from_env(cls, environ=None):
         env = os.environ if environ is None else environ
+        ctx = cls._read_context_file()
 
         def get(name, default=""):
             value = env.get(name)
             return default if value is None else str(value)
 
-        root = get("DSH_FILES_ROOT").strip() or DEFAULT_ROOT
-        owner = get("DSH_FILES_OWNER_QQ").strip()
-        supers_text = get("DSH_FILES_SUPERUSERS").strip() or DEFAULT_SUPERUSERS
+        root = get("DSH_FILES_ROOT").strip() or str(ctx.get("root") or "").strip() or DEFAULT_ROOT
+        owner = get("DSH_FILES_OWNER_QQ").strip() or str(ctx.get("owner_qq") or "").strip()
+        supers_text = (
+            get("DSH_FILES_SUPERUSERS").strip()
+            or ",".join(str(x) for x in (ctx.get("superusers") or []))
+            or DEFAULT_SUPERUSERS
+        )
         max_read = _to_int(get("DSH_FILES_MAX_READ_BYTES").strip(), DEFAULT_MAX_READ_BYTES)
         return cls(
             root=root,
@@ -265,8 +292,8 @@ class FilesConfig:
     def require_owner(self):
         if not self.owner_qq:
             raise ToolError(
-                "未设置环境变量 DSH_FILES_OWNER_QQ，无法确定本次任务所属 QQ，"
-                "文件操作已全部拒绝（请让桥在 spawn dsh 时注入该环境变量）"
+                "拿不到本次任务所属 QQ（既没有 DSH_FILES_OWNER_QQ 环境变量，也没有工作区 "
+                "ipc/files-context.json），文件操作已全部拒绝（请让桥写入该上下文文件）"
             )
 
     def is_superuser(self, qq=None):

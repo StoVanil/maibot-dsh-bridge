@@ -21,6 +21,21 @@ import sys
 import time
 from pathlib import Path
 
+# 可选：同目录的 dsh_files_mcp.py 提供文件柜工具（files_*）。
+# 为什么合并进同一个 server：dsh 的 @deepseek-ai/dsh-mcp-client 对同一个 package 的
+# 第二个实例（不同 id、不同 serverName）不生效——单独起 files server 时工具不会被注册，
+# 所以把文件工具挂到本 server（serverName=ask）下，工具名形如 mcp__ask__files_list。
+_FILES_MOD = None
+try:
+    _here = str(Path(__file__).resolve().parent)
+    if _here not in sys.path:
+        sys.path.insert(0, _here)
+    import dsh_files_mcp as _FILES_MOD  # type: ignore  # noqa: E402
+except Exception:  # noqa: BLE001
+    _FILES_MOD = None
+
+_FILES_TOOL_NAMES = [str(t.get("name")) for t in getattr(_FILES_MOD, "TOOL_DEFS", []) or []] if _FILES_MOD else []
+
 SERVER_NAME = "dsh-ask-mcp"
 SERVER_VERSION = "0.1.0"
 PROTOCOL_VERSION = "2025-06-18"
@@ -181,7 +196,7 @@ def handle(msg: dict) -> None:
                 "protocolVersion": proto,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                "instructions": "用 ask_user 工具向 QQ 用户提问；调用会阻塞直到用户回答或超时。",
+                "instructions": "用 ask_user 向 QQ 用户提问（阻塞到回答或超时）；用 files_* 管理用户发来的文件（按 QQ 号隔离）。",
             },
         )
         log(f"initialize proto={proto}")
@@ -190,13 +205,23 @@ def handle(msg: dict) -> None:
         respond(msg_id, {})
         return
     if method == "tools/list":
-        respond(msg_id, {"tools": [TOOL_DEF]})
+        tools = [TOOL_DEF] + list(getattr(_FILES_MOD, "TOOL_DEFS", []) or []) if _FILES_MOD else [TOOL_DEF]
+        respond(msg_id, {"tools": tools})
         return
     if method == "tools/call":
         name = str(params.get("name") or "")
         args = params.get("arguments") or {}
         if not isinstance(args, dict):
             args = {}
+        if name in _FILES_TOOL_NAMES:
+            try:
+                text, is_error = _FILES_MOD.call_tool(name, args)  # type: ignore[union-attr]
+            except Exception as exc:  # noqa: BLE001
+                log(f"{name} 异常: {exc!r}")
+                respond(msg_id, {"content": [{"type": "text", "text": f"文件操作失败: {exc}"}], "isError": True})
+                return
+            respond(msg_id, {"content": [{"type": "text", "text": text}], "isError": is_error})
+            return
         if name != "ask_user":
             respond(msg_id, {"content": [{"type": "text", "text": f"未知工具: {name}"}], "isError": True})
             return

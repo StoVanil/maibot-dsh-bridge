@@ -55,7 +55,7 @@ _FILE_NAME_SPLIT_RE = re.compile(r"，(?:大小:|链接:)")
 _LOG_NAME_MAX = 120
 
 # 写进每个聊天流工作区的 AGENTS.md（dsh 会自动读取工作区的 AGENTS.md）
-_WORKSPACE_AGENTS_MD = "<!-- 大肥鱼-bridge workspace guide v4 -->\n# 你在「麦麦 × 大肥鱼 桥」里工作\n\n这个工作区由 MaiBot 的 maibot-大肥鱼-bridge 插件给 QQ 用户建的任务目录：你替用户在服务器上干活，最终回答会被转给用户。\n\n## 需要用户拍板时：先调 ask 工具（重要）\n\n需要用户决定（选方案、确认要不要删/改、缺关键信息）时，**不要自己猜**：\n\n1. 调用工具 `mcp__ask__ask_user`（参数：`question` 必填，`options` 可选，`note` 可选）。\n   它会阻塞，直到用户在 QQ 里回答，然后把答案作为工具结果返回给你；你接着做即可。\n2. 如果它返回超时，按提示处理（说明卡点、先做能独立完成的部分）。\n3. 如果该工具不可用（不存在 / 报错），再退回到：在工作区写 `ask-requests/<短名>.json`\n   （`{\"question\": \"...\", \"options\": [\"...\"], \"note\": \"...\"}`），然后结束这一轮，桥会用同一会话续跑你。\n\n## 交付文件：用 present\n\n要交给用户的文件（文档、压缩包、图片等）用 `present` 声明：\n`present({\"files\": [{\"path\": \"报告.docx\", \"description\": \"说明\"}]})`。\n桥会把这些文件发回 QQ；交付物必须在你当前工作区里（或 session 可访问的普通文件）。\n\n## 想稍后再做：写 schedule-requests\n\n在工作区建 `schedule-requests/<短名>.json`：\n`{\"title\": \"任务名\", \"prompt\": \"到点要执行的任务\", \"after_seconds\": 3600}`\n时间规则四选一：`after_seconds` / `every_seconds` / `at`（ISO 时刻）/ `cron`（5 字段）。\n\n## 用户从 QQ 发来的文件\n\n用户发的文件/图片按 QQ 号存在「文件根目录/<QQ号>/」（绝对路径会写在当次任务提示的【用户文件】里），可以直接读。\n查/改名/删这些文件，优先用文件管理工具（MCP server `files`）：\n- `mcp__files__files_list`（列目录，可选 user/path）、`mcp__files__files_info`（大小/预览）\n- `mcp__files__files_read`（读文本）、`mcp__files__files_mkdir` / `files_move` / `files_delete`\n- `mcp__files__files_users`（仅主人：各人占用）\n普通用户只能看自己的目录，别人的文件夹不要越界（工具会拒）。用户说「把我的文件发回来」时，\n用 `present` 申明该文件绝对路径即可发回 QQ。\n\n## Office 文档（Word/PPT/Excel）\n\n用这个 Python（已装 python-docx / python-pptx / openpyxl）：\n`/opt/dsh-office-venv/bin/python`\n不要自己 pip 安装，也不要用别处找的 python。\n\n## 交付节奏（别陷进无限打磨）\n\n任务没有硬性时限，用户可以随时发 `/dsh stop` 停你。所以：\n\n- **一旦有可用结果，先 `present` 交付**；想继续改进可以，但先交一版再迭代（present 可以多次）。\n- 不要为排版、措辞、细节反复重写同一个文件超过 **2 轮**；交一版能用的，并在回答里说明还能怎么改。\n- 长时间只打磨不交付，用户就只能干等——先交付永远比\"再改改\"更受欢迎。\n"
+_WORKSPACE_AGENTS_MD = "<!-- 大肥鱼-bridge workspace guide v5 -->\n# 你在「麦麦 × 大肥鱼 桥」里工作\n\n这个工作区由 MaiBot 的 maibot-大肥鱼-bridge 插件给 QQ 用户建的任务目录：你替用户在服务器上干活，最终回答会被转给用户。\n\n## 需要用户拍板时：先调 ask 工具（重要）\n\n需要用户决定（选方案、确认要不要删/改、缺关键信息）时，**不要自己猜**：\n\n1. 调用工具 `mcp__ask__ask_user`（参数：`question` 必填，`options` 可选，`note` 可选）。\n   它会阻塞，直到用户在 QQ 里回答，然后把答案作为工具结果返回给你；你接着做即可。\n2. 如果它返回超时，按提示处理（说明卡点、先做能独立完成的部分）。\n3. 如果该工具不可用（不存在 / 报错），再退回到：在工作区写 `ask-requests/<短名>.json`\n   （`{\"question\": \"...\", \"options\": [\"...\"], \"note\": \"...\"}`），然后结束这一轮，桥会用同一会话续跑你。\n\n## 交付文件：用 present\n\n要交给用户的文件（文档、压缩包、图片等）用 `present` 声明：\n`present({\"files\": [{\"path\": \"报告.docx\", \"description\": \"说明\"}]})`。\n桥会把这些文件发回 QQ；交付物必须在你当前工作区里（或 session 可访问的普通文件）。\n\n## 想稍后再做：写 schedule-requests\n\n在工作区建 `schedule-requests/<短名>.json`：\n`{\"title\": \"任务名\", \"prompt\": \"到点要执行的任务\", \"after_seconds\": 3600}`\n时间规则四选一：`after_seconds` / `every_seconds` / `at`（ISO 时刻）/ `cron`（5 字段）。\n\n## 用户从 QQ 发来的文件\n\n用户发的文件/图片按 QQ 号存在「文件根目录/<QQ号>/」（绝对路径会写在当次任务提示的【用户文件】里），可以直接读。\n查/改名/删这些文件，优先用文件管理工具（MCP server `ask` 下的 files_* 工具）：\n- `mcp__ask__files_list`（列目录，可选 user/path）、`mcp__ask__files_info`（大小/预览）\n- `mcp__ask__files_read`（读文本）、`mcp__ask__files_mkdir` / `files_move` / `files_delete`\n- `mcp__ask__files_users`（仅主人：各人占用）；没有这些工具时直接用 read/ls 读文件柜目录\n普通用户只能看自己的目录，别人的文件夹不要越界（工具会拒）。用户说「把我的文件发回来」时，\n用 `present` 申明该文件绝对路径即可发回 QQ。\n\n## Office 文档（Word/PPT/Excel）\n\n用这个 Python（已装 python-docx / python-pptx / openpyxl）：\n`/opt/dsh-office-venv/bin/python`\n不要自己 pip 安装，也不要用别处找的 python。\n\n## 交付节奏（别陷进无限打磨）\n\n任务没有硬性时限，用户可以随时发 `/dsh stop` 停你。所以：\n\n- **一旦有可用结果，先 `present` 交付**；想继续改进可以，但先交一版再迭代（present 可以多次）。\n- 不要为排版、措辞、细节反复重写同一个文件超过 **2 轮**；交一版能用的，并在回答里说明还能怎么改。\n- 长时间只打磨不交付，用户就只能干等——先交付永远比\"再改改\"更受欢迎。\n"
 
 
 
@@ -2182,6 +2182,27 @@ class DshBridgePlugin(MaiBotPlugin):
         except Exception:  # noqa: BLE001
             self.ctx.logger.warning("写工作区 AGENTS.md 失败", exc_info=True)
 
+    def _write_files_context(self, ws: str, owner: str) -> None:
+        """给 dsh 侧的 files MCP 工具准备上下文。
+
+        dsh 的 mcp-client 会剥掉 DSH_* 环境变量再 spawn MCP 子进程，靠 env 继承传不了
+        「本次任务属于哪个 QQ」，所以每轮把它写进工作区的 ipc/files-context.json。
+        """
+        try:
+            d = Path(ws) / "ipc"
+            d.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "owner_qq": self._only_digits(owner),
+                "root": str(self._files_root()),
+                "superusers": sorted(self._superusers()),
+            }
+            fp = d / "files-context.json"
+            tmp = fp.with_suffix(".json.part")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, fp)
+        except Exception:  # noqa: BLE001
+            self.ctx.logger.warning("写文件柜上下文失败", exc_info=True)
+
     async def _drain_ingest(self, grace: float = 1.0, timeout: float = 30.0) -> None:
         """等这一轮 QQ 附件落盘完再开工（同一消息里的文件可能比命令晚一步落盘）。"""
         deadline = time.time() + max(0.0, float(timeout))
@@ -3502,6 +3523,7 @@ class DshBridgePlugin(MaiBotPlugin):
         ws = str(self._topic_dir(topic)) if topic else self._workspace(stream_id)
         if not session_id and topic:
             session_id = str(topic.get("session_id") or "")
+        self._write_files_context(ws, owner)
         self._ipc_seen.clear()
         self._ask_rounds = 0  # 本轮 MCP 提问次数（受 ask_max_rounds 限制）
         self._clear_ipc_dirs(ws)  # 清掉上一轮（可能被重载/中断）遗留的提问与回答

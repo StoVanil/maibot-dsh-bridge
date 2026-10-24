@@ -16,16 +16,7 @@
         cwd: !!js process.cwd()
         toolCallTimeoutMs: 900000
         failOnStartupError: true
-    # 文件柜工具：dsh 管理用户发来的文件（按 QQ 号隔离，普通用户只能看自己目录）
-    - id: mcp-files
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        serverName: files
-        transport: stdio
-        command: <MAIBOT_HOME>/.venv/bin/python
-        args: ['<MAIBOT_HOME>/scripts/dsh_files_mcp.py']
-        toolCallTimeoutMs: 60000
-        failOnStartupError: false
+    # 文件柜工具（files_*）已合并进上面的 ask server：把 scripts/dsh_files_mcp.py 和 dsh_ask_mcp.py 放在同一目录即可
     # 交付文件：dsh 用 present 声明，桥打包发 QQ
     - id: tool-present
       name: '@deepseek-ai/dsh-tool-present'
