@@ -1,30 +1,4 @@
-"""麦麦 × DeepSeek Harness (dsh) 桥插件（带任务守卫 + 精简转发回传）。
-
-作用：把 DeepSeek Harness (dsh) 接入麦麦。
-  - 命令 `/dsh [--timeout 秒] <任务>`：把任务外包给 dsh，结果回传当前聊天流。
-  - 工具 `dsh_run`：让麦麦（Planner）在聊天中自主把重活交给 dsh（自主下单）。
-
-执行模型（异步 + 守卫）：
-  - 异步：命令立即回执，dsh 在后台跑，完成后主动把结果推回群里（绕开宿主 60s RPC 超时）。
-  - 单并发：同一时刻只允许一个 dsh 任务。
-  - 不设时间预算（默认）：模型估不准自己的耗时，硬限时只会砍掉快做完的活；
-    改由用户手动控制——`/dsh stop` 随时停、`/dsh peek` 看进展。可选 `--timeout N` 单独设上限。
-  - 进展判据（三信号）：输出 / 进程 CPU 活跃 / 子进程存在，任一有变化即续命。
-  - 重复检测：输出原地复读超阈值 → 判定卡循环，终止。
-  - 死锁兜底：长时间无任何输出且进程静默才判卡死（默认 10 分钟，可配）。
-  - 分层终止：先温和 terminate，宽限期后 taskkill /T /F 杀整棵进程树。
-  - 异常/手动停止时：把本轮新产出的文件救回发给用户，不让活白干。
-
-回传形态（所有内容收进转发，外部不刷屏）：
-  - dsh 以 --json 输出结构化事件，桥逐事件解析。
-  - 外部：只发一句极简状态（完成 / 超时原因）。
-  - 转发：一条合并转发卡片，节点精简——
-      * 工具调用 = 一行「工具名 + 关键参数」（去掉 JSON 壳）
-      * 连续文本输出合并为一段
-      * 工具报错才保留一条
-      * 最终答案一个节点
-  - 这样群里只见「一句状态 + 一张卡片」，永不刷屏。
-"""
+"麦麦 × DeepSeek Harness (大肥鱼) 桥插件（带任务守卫 + 精简转发回传）。\n\n作用：把 DeepSeek Harness (大肥鱼) 接入麦麦。\n  - 命令 `/dsh [--timeout 秒] <任务>`：把任务外包给 大肥鱼，结果回传当前聊天流。\n  - 工具 `dsh_run`：让麦麦（Planner）在聊天中自主把重活交给 大肥鱼（自主下单）。\n\n执行模型（异步 + 守卫）：\n  - 异步：命令立即回执，大肥鱼 在后台跑，完成后主动把结果推回群里（绕开宿主 60s RPC 超时）。\n  - 单并发：同一时刻只允许一个 大肥鱼 任务。\n  - 不设时间预算（默认）：模型估不准自己的耗时，硬限时只会砍掉快做完的活；\n    改由用户手动控制——`/dsh stop` 随时停、`/dsh peek` 看进展。可选 `--timeout N` 单独设上限。\n  - 进展判据（三信号）：输出 / 进程 CPU 活跃 / 子进程存在，任一有变化即续命。\n  - 重复检测：输出原地复读超阈值 → 判定卡循环，终止。\n  - 死锁兜底：长时间无任何输出且进程静默才判卡死（默认 10 分钟，可配）。\n  - 分层终止：先温和 terminate，宽限期后 taskkill /T /F 杀整棵进程树。\n  - 异常/手动停止时：把本轮新产出的文件救回发给用户，不让活白干。\n\n回传形态（所有内容收进转发，外部不刷屏）：\n  - 大肥鱼 以 --json 输出结构化事件，桥逐事件解析。\n  - 外部：只发一句极简状态（完成 / 超时原因）。\n  - 转发：一条合并转发卡片，节点精简——\n      * 工具调用 = 一行「工具名 + 关键参数」（去掉 JSON 壳）\n      * 连续文本输出合并为一段\n      * 工具报错才保留一条\n      * 最终答案一个节点\n  - 这样群里只见「一句状态 + 一张卡片」，永不刷屏。\n"
 from __future__ import annotations
 
 import asyncio
@@ -79,51 +53,7 @@ _FILE_NAME_SPLIT_RE = re.compile(r"，(?:大小:|链接:)")
 _LOG_NAME_MAX = 120
 
 # 写进每个聊天流工作区的 AGENTS.md（dsh 会自动读取工作区的 AGENTS.md）
-_WORKSPACE_AGENTS_MD = """<!-- dsh-bridge workspace guide v4 -->
-# 你在「麦麦 × dsh 桥」里工作
-
-这个工作区由 MaiBot 的 maibot-dsh-bridge 插件给 QQ 用户建的任务目录：你替用户在服务器上干活，最终回答会被转给用户。
-
-## 需要用户拍板时：先调 ask 工具（重要）
-
-需要用户决定（选方案、确认要不要删/改、缺关键信息）时，**不要自己猜**：
-
-1. 调用工具 `mcp__ask__ask_user`（参数：`question` 必填，`options` 可选，`note` 可选）。
-   它会阻塞，直到用户在 QQ 里回答，然后把答案作为工具结果返回给你；你接着做即可。
-2. 如果它返回超时，按提示处理（说明卡点、先做能独立完成的部分）。
-3. 如果该工具不可用（不存在 / 报错），再退回到：在工作区写 `ask-requests/<短名>.json`
-   （`{"question": "...", "options": ["..."], "note": "..."}`），然后结束这一轮，桥会用同一会话续跑你。
-
-## 交付文件：用 present
-
-要交给用户的文件（文档、压缩包、图片等）用 `present` 声明：
-`present({"files": [{"path": "报告.docx", "description": "说明"}]})`。
-桥会把这些文件发回 QQ；交付物必须在你当前工作区里（或 session 可访问的普通文件）。
-
-## 想稍后再做：写 schedule-requests
-
-在工作区建 `schedule-requests/<短名>.json`：
-`{"title": "任务名", "prompt": "到点要执行的任务", "after_seconds": 3600}`
-时间规则四选一：`after_seconds` / `every_seconds` / `at`（ISO 时刻）/ `cron`（5 字段）。
-
-## 用户从 QQ 发来的文件
-
-用户发的文件/图片会保存在本工作区的 `uploads/`，绝对路径会写在当次任务提示的【工作区附件】里，可以直接读。
-
-## Office 文档（Word/PPT/Excel）
-
-用这个 Python（已装 python-docx / python-pptx / openpyxl）：
-`/opt/dsh-office-venv/bin/python`
-不要自己 pip 安装，也不要用别处找的 python。
-
-## 交付节奏（别陷进无限打磨）
-
-任务没有硬性时限，用户可以随时发 `/dsh stop` 停你。所以：
-
-- **一旦有可用结果，先 `present` 交付**；想继续改进可以，但先交一版再迭代（present 可以多次）。
-- 不要为排版、措辞、细节反复重写同一个文件超过 **2 轮**；交一版能用的，并在回答里说明还能怎么改。
-- 长时间只打磨不交付，用户就只能干等——先交付永远比"再改改"更受欢迎。
-"""
+_WORKSPACE_AGENTS_MD = "<!-- 大肥鱼-bridge workspace guide v4 -->\n# 你在「麦麦 × 大肥鱼 桥」里工作\n\n这个工作区由 MaiBot 的 maibot-大肥鱼-bridge 插件给 QQ 用户建的任务目录：你替用户在服务器上干活，最终回答会被转给用户。\n\n## 需要用户拍板时：先调 ask 工具（重要）\n\n需要用户决定（选方案、确认要不要删/改、缺关键信息）时，**不要自己猜**：\n\n1. 调用工具 `mcp__ask__ask_user`（参数：`question` 必填，`options` 可选，`note` 可选）。\n   它会阻塞，直到用户在 QQ 里回答，然后把答案作为工具结果返回给你；你接着做即可。\n2. 如果它返回超时，按提示处理（说明卡点、先做能独立完成的部分）。\n3. 如果该工具不可用（不存在 / 报错），再退回到：在工作区写 `ask-requests/<短名>.json`\n   （`{\"question\": \"...\", \"options\": [\"...\"], \"note\": \"...\"}`），然后结束这一轮，桥会用同一会话续跑你。\n\n## 交付文件：用 present\n\n要交给用户的文件（文档、压缩包、图片等）用 `present` 声明：\n`present({\"files\": [{\"path\": \"报告.docx\", \"description\": \"说明\"}]})`。\n桥会把这些文件发回 QQ；交付物必须在你当前工作区里（或 session 可访问的普通文件）。\n\n## 想稍后再做：写 schedule-requests\n\n在工作区建 `schedule-requests/<短名>.json`：\n`{\"title\": \"任务名\", \"prompt\": \"到点要执行的任务\", \"after_seconds\": 3600}`\n时间规则四选一：`after_seconds` / `every_seconds` / `at`（ISO 时刻）/ `cron`（5 字段）。\n\n## 用户从 QQ 发来的文件\n\n用户发的文件/图片会保存在本工作区的 `uploads/`，绝对路径会写在当次任务提示的【工作区附件】里，可以直接读。\n\n## Office 文档（Word/PPT/Excel）\n\n用这个 Python（已装 python-docx / python-pptx / openpyxl）：\n`/opt/dsh-office-venv/bin/python`\n不要自己 pip 安装，也不要用别处找的 python。\n\n## 交付节奏（别陷进无限打磨）\n\n任务没有硬性时限，用户可以随时发 `/dsh stop` 停你。所以：\n\n- **一旦有可用结果，先 `present` 交付**；想继续改进可以，但先交一版再迭代（present 可以多次）。\n- 不要为排版、措辞、细节反复重写同一个文件超过 **2 轮**；交一版能用的，并在回答里说明还能怎么改。\n- 长时间只打磨不交付，用户就只能干等——先交付永远比\"再改改\"更受欢迎。\n"
 
 
 
@@ -141,14 +71,13 @@ class DshConfig(PluginConfigBase):
     __ui_icon__ = "terminal"
     __ui_order__ = 1
 
-    command: str = Field(default="dsh", description="dsh 可执行命令（如 dsh，或 C:\\nodejs\\dsh.cmd）")
+    command: str = Field(default="dsh", description="大肥鱼 可执行命令（如 大肥鱼，或 C:\\nodejs\\大肥鱼.cmd）")
     extra_args: str = Field(default="--profile headless", description="固定附加参数；桥会自动追加 --json")
-    workspace_dir: str = Field(default="", description="dsh 工作目录；留空则用 data/dsh-bridge/workspace")
+    workspace_dir: str = Field(default="", description="大肥鱼 工作目录；留空则用 data/dsh-bridge/workspace")
     dsh_home: str = Field(
         default="",
         description=(
-            "headless 使用的 DSH_HOME（会话库/凭据/配置目录）。留空=默认 ~/.dsh；"
-            "建议设成独立目录（如 /root/.dsh-headless），这样桥的会话与 dsh Web GUI 互不干扰、也不会抢会话写锁"
+            "headless 使用的 DSH_HOME（会话库/凭据/配置目录）。留空=默认 ~/.大肥鱼；建议设成独立目录（如 /root/.大肥鱼-headless），这样桥的会话与 大肥鱼 Web GUI 互不干扰、也不会抢会话写锁"
         ),
     )
     timeout_default: int = Field(
@@ -182,9 +111,7 @@ class DshConfig(PluginConfigBase):
     permission_mode: Literal["workspace-write", "read-only", "danger-full-access"] = Field(
         default="danger-full-access",
         description=(
-            "dsh 沙箱权限模式。默认 danger-full-access：git clone / npm 等需要子进程管道的命令在 "
-            "workspace-write 下会被 Windows ACL 沙箱拒绝。要更严可改为 workspace-write 或 read-only，"
-            "但需接受相应命令失败。"
+            "大肥鱼 沙箱权限模式。默认 danger-full-access：git clone / npm 等需要子进程管道的命令在 workspace-write 下会被 Windows ACL 沙箱拒绝。要更严可改为 workspace-write 或 read-only，但需接受相应命令失败。"
         ),
     )
     silent_inject_chars: int = Field(
@@ -202,8 +129,7 @@ class DshConfig(PluginConfigBase):
     direct_result: bool = Field(
         default=True,
         description=(
-            "任务完成后把 dsh 的最终结果直接发到聊天。关闭后只回灌给墨、由墨组织回复"
-            "（实测墨不一定接话，容易出现「任务成功但聊天里没动静」）"
+            "任务完成后把 大肥鱼 的最终结果直接发到聊天。关闭后只回灌给墨、由墨组织回复（实测墨不一定接话，容易出现「任务成功但聊天里没动静」）"
         ),
     )
     direct_result_chars: int = Field(
@@ -214,12 +140,12 @@ class DshConfig(PluginConfigBase):
     )
     allow_self_schedule: bool = Field(
         default=True,
-        description="是否允许 dsh 经 schedule-requests 自建定时任务（默认开；关则禁止，风险自负）",
+        description="是否允许 大肥鱼 经 schedule-requests 自建定时任务（默认开；关则禁止，风险自负）",
     )
     # ── dsh 提问通道 ──
     ask_enabled: bool = Field(
         default=True,
-        description="允许 dsh 用 ask-requests 向你提问：桥把问题发到 QQ，你回一句就是答案，然后自动接着跑",
+        description="允许 大肥鱼 用 ask-requests 向你提问：桥把问题发到 QQ，你回一句就是答案，然后自动接着跑",
     )
     ask_timeout: int = Field(
         default=900,
@@ -232,7 +158,7 @@ class DshConfig(PluginConfigBase):
     )
     # ── QQ 文件入站 ──
     uploads_enabled: bool = Field(
-        default=True, description="接收 QQ 发来的文件/图片，存进 dsh 工作区的 uploads/ 供任务直接读取"
+        default=True, description="接收 QQ 发来的文件/图片，存进 大肥鱼 工作区的 uploads/ 供任务直接读取"
     )
     upload_max_mb: int = Field(default=50, description="单个附件最大体积（MB）", ge=1, le=500)
     upload_ttl_minutes: int = Field(
@@ -245,8 +171,7 @@ class DshConfig(PluginConfigBase):
     upload_wait_instruct: bool = Field(
         default=True,
         description=(
-            "收到文件后先拦住墨的回复，等用户说要干什么再开工。"
-            "开着能避免「墨自己去看文件」和「dsh 也在看文件」打架；纯文件消息才会被拦，文件+文字说明不拦。"
+            "收到文件后先拦住墨的回复，等用户说要干什么再开工。开着能避免「墨自己去看文件」和「大肥鱼 也在看文件」打架；纯文件消息才会被拦，文件+文字说明不拦。"
         ),
     )
 
@@ -281,13 +206,13 @@ class TopicConfig(PluginConfigBase):
 
     enabled: bool = Field(
         default=True,
-        description="话题模式：每个话题 = 一条持久 dsh 会话 + 独立工作目录。关掉则退回「一个聊天流一个目录」的旧行为",
+        description="话题模式：每个话题 = 一条持久 大肥鱼 会话 + 独立工作目录。关掉则退回「一个聊天流一个目录」的旧行为",
     )
     private_only: bool = Field(default=True, description="只在私聊启用话题模式（群聊保持旧行为）")
     idle_hours: int = Field(
         default=24, description="当前话题闲置超过这么多小时，下次派活自动新开一个话题", ge=1, le=720
     )
-    name_max_chars: int = Field(default=12, description="话题名长度上限（dsh 起名超出会被截断）", ge=4, le=40)
+    name_max_chars: int = Field(default=12, description="话题名长度上限（大肥鱼 起名超出会被截断）", ge=4, le=40)
     queue_max: int = Field(default=3, description="排队上限：全局串行，超出直接拒绝", ge=0, le=20)
     archive_keep_days: int = Field(
         default=7, description="归档话题保留天数，到期自动删目录并释放编号", ge=1, le=365
@@ -413,6 +338,7 @@ class DshBridgePlugin(MaiBotPlugin):
         self._run_state: Optional[_RunState] = None  # 正在跑的任务状态（peek 用）
         self._run_started = 0.0
         self._run_label = ""
+        self._run_stream = ""
         self._run_ws = ""
         self._run_task_text = ""
         self._run_budget = 0
@@ -424,19 +350,28 @@ class DshBridgePlugin(MaiBotPlugin):
         self._load_topics()
         asyncio.create_task(self._scheduler_loop())
         self.ctx.logger.info(
-            "麦麦×dsh 桥插件已加载 (command=%s, budget=%s, home=%s, display=%s)",
+            "麦麦×大肥鱼 桥插件已加载 (command=%s, budget=%s, home=%s, display=%s)",
             self.config.dsh.command,
             "不限时" if int(self.config.dsh.timeout_default) <= 0 else f"{self.config.dsh.timeout_default}s",
-            str(self.config.dsh.dsh_home or "").strip() or "默认(~/.dsh)",
+            str(self.config.dsh.dsh_home or "").strip() or "默认(~/.大肥鱼)",
             self.config.dsh.display_mode,
         )
 
     async def on_unload(self) -> None:
         self._scheduler_running = False
+        if self._running and self._run_stream:
+            # 插件重载/卸载会打断正在跑的任务：告诉用户，别让它无声无息地消失
+            try:
+                await self.ctx.send.text(
+                    "⚠️ 墨正在给大肥鱼换零件（插件重载），这轮先断啦～等下再发一次就好，工作区文件都还在",
+                    self._run_stream,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         pid = self._current_pid
         if pid:
             await asyncio.to_thread(self._kill_tree, pid)
-        self.ctx.logger.info("麦麦×dsh 桥插件已卸载")
+        self.ctx.logger.info("麦麦×大肥鱼 桥插件已卸载")
 
     # ── 定时任务（桥内置调度） ────────────────────────────────
 
@@ -601,7 +536,7 @@ class DshBridgePlugin(MaiBotPlugin):
         return self._create_topic(chat_id)
 
     def _chat_ws(self, chat_id: str, group_id: str = "") -> str:
-        """聊天对应的 dsh 工作目录：话题模式用当前话题目录，否则退回旧版按聊天流的目录。"""
+        "聊天对应的 大肥鱼 工作目录：话题模式用当前话题目录，否则退回旧版按聊天流的目录。"
         if self._topic_mode_for(chat_id, group_id):
             topic = self._current_topic(chat_id)
             if topic and not topic.get("archived_at"):
@@ -745,8 +680,7 @@ class DshBridgePlugin(MaiBotPlugin):
     def _start_agent_pending(self, chat_id: str) -> str:
         if not self.config.experimental.agent_tools:
             return (
-                "🧪 实验功能的**总开关**还没打开：请先在插件设置里把「实验功能 → agent_tools」打开，"
-                "再发 /dsh 实验开启。"
+                "🧪 实验功能的**总开关**还没打开呢～先去插件设置里把「实验功能 → agent_tools」打开，再来 /dsh 实验开启 (｡•́︿•̀｡)"
             )
         code = f"{random.randint(100000, 999999)}"
         now = time.time()
@@ -762,12 +696,7 @@ class DshBridgePlugin(MaiBotPlugin):
         self._save_exp()
         hours = self._arm_hours()
         return (
-            "🧪 实验功能（墨自主调度）· 二次确认\n"
-            f"开启后 {hours} 小时内：\n"
-            "· /dsh 命令全部临时禁用\n"
-            "· 墨可以直接建/切/改/删话题、派活（不用你打命令）\n"
-            "· 到期自动关闭，也可 /dsh 实验关闭 提前关\n\n"
-            f"确认码：{code}\n回复 /dsh 实验确认 {code}（{ttl // 60} 分钟内有效）"
+            f"🧪 实验功能（墨可以自己调度大肥鱼）· 二次确认\n开启后 {hours} 小时内：\n· /dsh 命令全部临时收起来（/dsh stop、/dsh peek 还能用）\n· 墨可以直接建/切/改/删话题、派活，不用你打命令啦\n· 到期自动关，也可以 /dsh 实验关闭 提前收摊\n\n确认码：{code}\n回复 /dsh 实验确认 {code}（{ttl // 60} 分钟内有效）"
         )
 
     async def _disarm_agent(self, reason: str, notify: bool = True) -> None:
@@ -779,7 +708,7 @@ class DshBridgePlugin(MaiBotPlugin):
             self.ctx.logger.info("实验功能已关闭：%s", reason)
             if notify and target:
                 try:
-                    await self.ctx.send.text(f"🧪 实验功能已关闭（{reason}）。/dsh 命令已恢复。", target)
+                    await self.ctx.send.text(f"🧪 实验功能关掉啦（{reason}），/dsh 命令回来了～", target)
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -791,7 +720,7 @@ class DshBridgePlugin(MaiBotPlugin):
         self._exp = {"armed": False, "expires_at": 0, "closed_reason": "24 小时到期", "closed_at": time.time()}
         self._save_exp()
         self.ctx.logger.info("实验功能到期自动关闭")
-        return "🧪 实验功能到期（最长 24 小时），已自动关闭。/dsh 命令恢复，墨也不再自主调度。"
+        return "🧪 实验功能到期（最长 24 小时），墨自己收摊了～/dsh 命令恢复，也不再自己调度大肥鱼了"
 
     def _agent_tool_gate(self, kwargs: dict[str, Any]) -> Optional[dict[str, Any]]:
         """实验工具的统一准入检查；返回错误 dict，None 表示放行。"""
@@ -822,11 +751,11 @@ class DshBridgePlugin(MaiBotPlugin):
             code = m.group(1)
             pending = str(self._exp.get("pending_code") or "")
             if not pending:
-                return "还没有待确认的开启请求，先发 /dsh 实验开启。"
+                return "还没有待确认的开启请求哦～先发 /dsh 实验开启"
             if time.time() > float(self._exp.get("pending_expires") or 0):
-                return "确认码已过期，请重新发 /dsh 实验开启。"
+                return "确认码过期啦…重新发一次 /dsh 实验开启 吧"
             if code != pending:
-                return "确认码不对，请再发一次 /dsh 实验确认 <6 位数字>。"
+                return "确认码不太对呢，再发一次 /dsh 实验确认 <6 位数字> 试试 (・_・;)"
             hours = self._arm_hours()
             self._exp = {
                 "armed": True,
@@ -837,25 +766,21 @@ class DshBridgePlugin(MaiBotPlugin):
             self._save_exp()
             self.ctx.logger.info("实验功能已开启 %d 小时（by %s）", hours, stream_id)
             return (
-                f"🧪 实验功能已开启，{hours} 小时有效（剩余 {self._agent_remaining_text()}）。\n"
-                "· /dsh 命令已临时禁用\n"
-                "· 墨现在可以自主建/切/改/删话题、派活\n"
-                "· 提前关闭发 /dsh 实验关闭"
+                f"🧪 实验功能开好啦，{hours} 小时有效（剩余 {self._agent_remaining_text()}）\n· /dsh 命令先收起来啦\n· 墨现在可以自己建/切/改/删话题、派活\n· 想提前收摊发 /dsh 实验关闭"
             )
         if re.match(r"^(?:实验|experiment)\s*(?:关闭|off)$", raw, re.IGNORECASE):
             if not self._exp.get("armed"):
-                return "实验功能当前没有开启。"
+                return "实验功能现在没开着哦～"
             await self._disarm_agent("用户手动关闭", notify=False)
-            return "🧪 实验功能已手动关闭，/dsh 命令恢复。"
+            return "🧪 实验功能关掉啦，/dsh 命令回来咯～"
         if re.match(r"^(?:实验|experiment)\s*(?:状态|status)$", raw, re.IGNORECASE):
             if self._agent_armed():
-                return f"🧪 实验功能：已开启，剩余 {self._agent_remaining_text()}（到期自动关闭）。"
+                return f"🧪 实验功能开着呢，还剩 {self._agent_remaining_text()}（到期自动关）"
             if self._exp.get("pending_code"):
-                return "🧪 实验功能：有待确认的开启请求，回复 /dsh 实验确认 <码> 生效。"
+                return "🧪 实验功能：有待确认的开启请求，回复 /dsh 实验确认 <码> 就生效啦～"
             master = "开" if self.config.experimental.agent_tools else "关"
             return (
-                f"🧪 实验功能：未开启（总开关：{master}）。"
-                "开启：先在插件设置打开 agent_tools，再 /dsh 实验开启。"
+                f"🧪 实验功能没开（总开关：{master}）～想开的话：先在插件设置打开 agent_tools，再 /dsh 实验开启"
             )
         return None
 
@@ -1000,7 +925,7 @@ class DshBridgePlugin(MaiBotPlugin):
             if self._topic_mode_for(stream_id, str((ctx or {}).get("group_id") or "")):
                 t = self._topics.get(int(topic_id)) if topic_id else self._current_topic(stream_id)
                 label = self._topic_label(t) + " " if t else ""
-            await self.ctx.send.text(f"⏰ {label}定时任务「{title}」触发：{prompt[:60]}", stream_id)
+            await self.ctx.send.text(f"⏰ {label}你定好的「{title}」到点啦：{prompt[:60]}", stream_id)
         except Exception:  # noqa: BLE001
             pass
         self._running = True
@@ -1067,7 +992,7 @@ class DshBridgePlugin(MaiBotPlugin):
         return Path(self._chat_ws(stream_id, group_id)) / "schedule-requests"
 
     async def _process_schedule_requests(self, stream_id: str, ctx: dict[str, Any]) -> None:
-        """扫描 dsh 写下的 schedule-requests/*.json，建任务后移到 .done（幂等）。"""
+        "扫描 大肥鱼 写下的 schedule-requests/*.json，建任务后移到 .done（幂等）。"
         if not self.config.dsh.allow_self_schedule:
             return
         req_dir = self._schedule_requests_dir(stream_id, str((ctx or {}).get("group_id") or ""))
@@ -1103,9 +1028,9 @@ class DshBridgePlugin(MaiBotPlugin):
             except Exception:  # noqa: BLE001
                 pass
         if created:
-            self.ctx.logger.info("dsh 新建定时任务 %d 个: %s", len(created), "; ".join(created))
+            self.ctx.logger.info("大肥鱼 新建定时任务 %d 个: %s", len(created), "; ".join(created))
             try:
-                await self.ctx.send.text("⏰ dsh 新建定时任务：" + "、".join(created), stream_id)
+                await self.ctx.send.text("⏰ 大肥鱼给自己记了个定时活：" + "、".join(created), stream_id)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1129,7 +1054,7 @@ class DshBridgePlugin(MaiBotPlugin):
                 if sid and float(item.get("deadline") or 0) > now:
                     self._pending[sid] = item
             if self._pending:
-                self.ctx.logger.info("已载入等待回答的 dsh 提问 %d 个", len(self._pending))
+                self.ctx.logger.info("已载入等待回答的 大肥鱼 提问 %d 个", len(self._pending))
         except Exception:  # noqa: BLE001
             self.ctx.logger.warning("读取待回答问题失败", exc_info=True)
 
@@ -1155,7 +1080,7 @@ class DshBridgePlugin(MaiBotPlugin):
         return Path(self._chat_ws(stream_id)) / ASK_DIR_NAME
 
     def _take_ask_request(self, stream_id: str) -> Optional[dict[str, Any]]:
-        """取一条 dsh 写下的提问（消费后移入 .done，幂等）。"""
+        "取一条 大肥鱼 写下的提问（消费后移入 .done，幂等）。"
         req_dir = self._ask_dir(stream_id)
         if not req_dir.is_dir():
             return None
@@ -1193,10 +1118,10 @@ class DshBridgePlugin(MaiBotPlugin):
         timeout: int,
         depth: int,
     ) -> None:
-        """把 dsh 的问题发到聊天，并登记"等回答"。"""
+        "把 大肥鱼 的问题发到聊天，并登记\"等回答\"。"
         conf = self.config.dsh
         minutes = max(1, int(int(conf.ask_timeout) // 60))
-        lines = ["❓ dsh 需要你确认：", str(ask.get("question") or "")]
+        lines = ["❓ 大肥鱼凑过来小声问：", str(ask.get("question") or "")]
         if ask.get("note"):
             lines.append(f"（{ask['note']}）")
         if ask.get("options"):
@@ -1204,7 +1129,7 @@ class DshBridgePlugin(MaiBotPlugin):
             for idx, opt in enumerate(ask["options"], 1):
                 lines.append(f"  {idx}. {opt}")
         lines.append("")
-        lines.append(f"直接回一句话就是答案，{minutes} 分钟内有效（以 / 开头的命令不算答案）。")
+        lines.append(f"直接回墨一句话就好，{minutes} 分钟内都算数（/ 开头的命令不算哦）")
         await self.ctx.send.text("\n".join(lines), stream_id)
         self._pending[stream_id] = {
             "stream_id": stream_id,
@@ -1221,7 +1146,7 @@ class DshBridgePlugin(MaiBotPlugin):
         }
         self._save_pending()
         self.ctx.logger.info(
-            "dsh 提问已发出（stream=%s, session=%s, 等待 %ss）",
+            "大肥鱼 提问已发出（stream=%s, session=%s, 等待 %ss）",
             stream_id,
             state.session_id,
             conf.ask_timeout,
@@ -1232,7 +1157,7 @@ class DshBridgePlugin(MaiBotPlugin):
         question: str, options: list[Any], note: str, label: str, deadline: float
     ) -> str:
         minutes = max(1, int((deadline - time.time()) // 60))
-        lines = [f"❓ {label}dsh 需要你确认：", str(question)]
+        lines = [f"❓ {label}大肥鱼凑过来小声问：", str(question)]
         if note:
             lines.append(f"（{note}）")
         if options:
@@ -1243,8 +1168,22 @@ class DshBridgePlugin(MaiBotPlugin):
         lines.append(f"直接回一句话就是答案，{minutes} 分钟内有效（以 / 开头的命令不算答案）。")
         return "\n".join(lines)
 
-    async def _watch_ipc_questions(self, ws: str, stream_id: str, ctx: dict[str, Any]) -> None:
-        """任务运行中：把 dsh 通过 MCP ask 工具写下的问题发到 QQ，并登记等待回答。"""
+    def _clear_ipc_dirs(self, ws: str) -> None:
+        """清掉话题工作区里遗留的提问/回答文件（上一个被中断的任务可能留下它们）。"""
+        base = Path(ws) / "ipc"
+        for name in ("questions", "answers"):
+            d = base / name
+            try:
+                if d.is_dir():
+                    for fp in d.glob("*.json"):
+                        fp.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                self.ctx.logger.warning("清理遗留 IPC 文件失败: %s", d, exc_info=True)
+
+    async def _watch_ipc_questions(
+        self, ws: str, stream_id: str, ctx: dict[str, Any], since: float = 0.0
+    ) -> None:
+        "任务运行中：把 大肥鱼 通过 MCP ask 工具写下的问题发到 QQ，并登记等待回答。\n\n        since：本轮开始时间戳；早于它的提问文件是上一轮（被打断的）遗留，必须忽略，\n        否则会把「上一个任务的问题」当成本轮的问题发给用户。\n        "
         qdir = Path(ws) / "ipc" / "questions"
         adir = Path(ws) / "ipc" / "answers"
         try:
@@ -1255,6 +1194,12 @@ class DshBridgePlugin(MaiBotPlugin):
                 for fp in sorted(qdir.glob("*.json")):
                     qid = fp.stem
                     if qid in self._ipc_seen:
+                        continue
+                    try:
+                        if fp.stat().st_mtime < since - 1:
+                            self._ipc_seen.add(qid)
+                            continue
+                    except Exception:  # noqa: BLE001
                         continue
                     try:
                         data = json.loads(fp.read_text(encoding="utf-8"))
@@ -1304,7 +1249,7 @@ class DshBridgePlugin(MaiBotPlugin):
                     self._save_pending()
                     self._ipc_waiting = False
                     try:
-                        await self.ctx.send.text("⏳ dsh 的提问没等到回答（工具超时），它已经自己往下走了。", stream_id)
+                        await self.ctx.send.text("⏳ 大肥鱼的问题没等到回答（工具超时），它自己先往下做啦", stream_id)
                     except Exception:  # noqa: BLE001
                         pass
         except asyncio.CancelledError:
@@ -1347,7 +1292,7 @@ class DshBridgePlugin(MaiBotPlugin):
                 self._ipc_waiting = False
             try:
                 await self.ctx.send.text(
-                    "⏳ 刚才 dsh 的问题超时没等到回答，这轮先放弃了。要接着做就重新发一条指令。",
+                    "⏳ 刚才大肥鱼的问题超时没等到回答，这轮先放过啦～要接着做就再发一条指令 (´･_･`)",
                     sid,
                 )
             except Exception:  # noqa: BLE001
@@ -1355,7 +1300,7 @@ class DshBridgePlugin(MaiBotPlugin):
         self._save_pending()
 
     async def _resume_with_answer(self, pending: dict[str, Any], answer: str, stream_id: str) -> None:
-        """用户回答了 dsh 的问题：带 --session-id 续跑同一个会话。"""
+        "用户回答了 大肥鱼 的问题：带 --session-id 续跑同一个会话。"
         self._running = True
         try:
             prompt = (
@@ -1375,7 +1320,7 @@ class DshBridgePlugin(MaiBotPlugin):
                 topic_id=pending.get("topic_id"),
             )
         except Exception:  # noqa: BLE001
-            self.ctx.logger.warning("续跑 dsh 失败", exc_info=True)
+            self.ctx.logger.warning("续跑 大肥鱼 失败", exc_info=True)
         finally:
             self._running = False
 
@@ -1384,7 +1329,7 @@ class DshBridgePlugin(MaiBotPlugin):
     @HookHandler(
         "chat.receive.after_process",
         name="dsh_bridge_inbox",
-        description="接住用户对 dsh 提问的回答；并把 QQ 发来的文件和图片存进 dsh 工作区",
+        description="接住用户对 大肥鱼 提问的回答；并把 QQ 发来的文件和图片存进 大肥鱼 工作区",
         mode=HookMode.BLOCKING,
         order=HookOrder.LATE,
         timeout_ms=6000,
@@ -1394,7 +1339,7 @@ class DshBridgePlugin(MaiBotPlugin):
         try:
             return await self._handle_receive(message or {}, **kwargs)
         except Exception:  # noqa: BLE001
-            self.ctx.logger.warning("dsh 桥收件钩子异常", exc_info=True)
+            self.ctx.logger.warning("大肥鱼 桥收件钩子异常", exc_info=True)
             return None
 
     async def _handle_receive(self, message: dict[str, Any], **kwargs: Any) -> Any:
@@ -1420,7 +1365,7 @@ class DshBridgePlugin(MaiBotPlugin):
                         pass
                 try:
                     await self.ctx.send.text(
-                        "📎 文件已收下（dsh 下个任务能直接用）。不过 dsh 还等你回答：\n"
+                        "📎 文件收下啦（大肥鱼下个任务能直接用）。不过大肥鱼还在等你回答：\n"
                         + str(pending.get("question") or "")[:300],
                         stream_id,
                     )
@@ -1440,7 +1385,7 @@ class DshBridgePlugin(MaiBotPlugin):
                 self._ipc_waiting = False
                 try:
                     await self.ctx.send.text(
-                        "✅ 收到，已交给 dsh，它接着说。" if ok else "⚠️ 答案写回失败，dsh 可能等到超时。",
+                        "✅ 收到啦，已经交给大肥鱼，它接着说～" if ok else "⚠️ 答案没写进去…大肥鱼可能要白等到超时 (｡•́︿•̀｡)",
                         stream_id,
                     )
                 except Exception:  # noqa: BLE001
@@ -1452,7 +1397,7 @@ class DshBridgePlugin(MaiBotPlugin):
                 pass
             elif self._reject_busy():
                 try:
-                    await self.ctx.send.text("dsh 现在正忙，等这轮跑完再把答案发一遍就行。", stream_id)
+                    await self.ctx.send.text("大肥鱼正忙着呢，等这轮跑完再把答案发一次就好～", stream_id)
                 except Exception:  # noqa: BLE001
                     pass
                 return None
@@ -1460,7 +1405,7 @@ class DshBridgePlugin(MaiBotPlugin):
                 self._pending.pop(stream_id, None)
                 self._save_pending()
                 try:
-                    await self.ctx.send.text("✅ 收到，继续交给 dsh…", stream_id)
+                    await self.ctx.send.text("✅ 收到，继续交给大肥鱼…", stream_id)
                 except Exception:  # noqa: BLE001
                     pass
                 asyncio.create_task(self._resume_with_answer(pending, text.strip(), stream_id))
@@ -1482,7 +1427,7 @@ class DshBridgePlugin(MaiBotPlugin):
                     try:
                         await self.ctx.send.text(
                             "📎 收到文件：" + "、".join(names) +
-                            "。\n已放进 dsh 工作区，等你说要做什么（比如「把这个转成 PDF」），我再让 dsh 开工。",
+                            "。\n已经放进大肥鱼的工作区啦，要它做点啥？（比如「把这个转成 PDF」）墨再喊它开工～",
                             stream_id,
                         )
                     except Exception:  # noqa: BLE001
@@ -1492,7 +1437,7 @@ class DshBridgePlugin(MaiBotPlugin):
                             stream_id,
                             segments=[{
                                 "type": "text",
-                                "content": f"（用户发来文件：{'、'.join(names)}，已存入 dsh 工作区；等用户说明要做什么，不要主动去读该文件。）",
+                                "content": f"（用户发来文件：{'、'.join(names)}，已存入 大肥鱼 工作区；等用户说明要做什么，不要主动去读该文件。）",
                             }],
                             source_kind="dsh-bridge",
                         )
@@ -1634,15 +1579,24 @@ class DshBridgePlugin(MaiBotPlugin):
             return {"name": name, "path": "", "size": len(data), "url": url, "ts": time.time(), "ok": False}
         return self._save_upload_bytes(data, name, ws, url=url)
 
+    @staticmethod
+    def _api_meta(got: Any) -> Any:
+        """宿主 api.get 有两种返回形态：直接返回 meta，或 {"success":True,"api":meta|None}。"""
+        if not isinstance(got, dict):
+            return got
+        if "api" in got:
+            return got.get("api")
+        if got.get("name") or got.get("description"):
+            return got  # 裸 meta
+        return None
+
     async def _has_napcat_api(self, api_name: str) -> bool:
         """Host 的 api.get 返回 {"success": True, "api": 元信息|None}，不是裸 None。"""
         try:
             res = await self.ctx.api.get(api_name)
         except Exception:  # noqa: BLE001
             return False
-        if isinstance(res, dict):
-            return bool(res.get("api")) or bool(res.get("name"))
-        return bool(res)
+        return bool(self._api_meta(res))
 
     @staticmethod
     def _unwrap_api(res: Any) -> Any:
@@ -1789,7 +1743,7 @@ class DshBridgePlugin(MaiBotPlugin):
         if failed:
             try:
                 await self.ctx.send.text(
-                    "⚠️ 你发的文件没取到内容：" + "、".join(failed[:3]) + "（可能已过期或太大）。重发一次就行。",
+                    "⚠️ 你发的文件墨没取到内容：" + "、".join(failed[:3]) + "（可能已过期或太大）。重发一次就行。",
                     stream_id,
                 )
             except Exception:  # noqa: BLE001
@@ -1800,7 +1754,7 @@ class DshBridgePlugin(MaiBotPlugin):
         if self.config.dsh.upload_ack:
             try:
                 names = "、".join(f"{u['name']}（{self._size_text(u.get('size') or 0)}）" for u in saved)
-                await self.ctx.send.text(f"📎 收到：{names}\n已放进 dsh 工作区，下个任务可以直接用。", stream_id)
+                await self.ctx.send.text(f"📎 收到：{names}\n放进大肥鱼的工作区啦，下个任务直接用～", stream_id)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1823,7 +1777,7 @@ class DshBridgePlugin(MaiBotPlugin):
             self.ctx.logger.warning("保存附件索引失败", exc_info=True)
 
     def _recent_uploads(self, ws: str, limit: int = 8) -> list[dict[str, Any]]:
-        """最近发给 dsh 的附件（按 upload_ttl_minutes 过期）。"""
+        "最近发给 大肥鱼 的附件（按 upload_ttl_minutes 过期）。"
         fp = self._uploads_index_file(ws)
         if not fp.is_file():
             return []
@@ -2133,7 +2087,7 @@ class DshBridgePlugin(MaiBotPlugin):
         try:
             proc = await asyncio.to_thread(self._spawn, task, ws, env, session_id)
         except Exception as exc:  # noqa: BLE001
-            state.events.append({"type": "raw", "text": f"❌ 启动 dsh 失败：{exc}"})
+            state.events.append({"type": "raw", "text": f"❌ 启动 大肥鱼 失败：{exc}"})
             self._run_state = None
             return "spawn-error", state
 
@@ -2205,10 +2159,10 @@ class DshBridgePlugin(MaiBotPlugin):
         return reason, state
 
     _REASON_MSG = {
-        "failed": "❌ dsh 任务执行失败（详见转发）。",
-        "timeout": "⏱ dsh 任务达到时间上限，已终止。",
-        "stalled": "🛑 dsh 长时间无任何输出（死锁兜底），已终止。",
-        "loop": "🔁 dsh 输出疑似陷入循环（重复度过高），已终止。",
+        "failed": "❌ 大肥鱼干活失败了（详见转发）…要不要再试一次？",
+        "timeout": "⏱ 到时间上限啦，大肥鱼被叫停 (´-ω-`)",
+        "stalled": "🛑 大肥鱼很久没动静（死锁兜底），墨把它叫停了",
+        "loop": "🔁 大肥鱼好像在原地打转（重复度太高），墨叫停了",
         "stop": "🛑 按你的要求停下了。",
     }
 
@@ -2232,7 +2186,7 @@ class DshBridgePlugin(MaiBotPlugin):
 
     @staticmethod
     def _strip_tags(res: str) -> str:
-        """去掉 dsh 结果里的 XML 壳（<path>…</path> / <content>…</content>）。"""
+        "去掉 大肥鱼 结果里的 XML 壳（<path>…</path> / <content>…</content>）。"
         cleaned = re.sub(r"</?[A-Za-z][^>]*>", "", res)
         return cleaned.strip()
 
@@ -2364,19 +2318,22 @@ class DshBridgePlugin(MaiBotPlugin):
             return False
         try:
             got = await self.ctx.api.get(api)
-            meta = got.get("api") if isinstance(got, dict) else None
+            meta = self._api_meta(got)
             if not meta:
-                return False  # 非 NapCat 适配器：没有此接口，回退卡片
+                self.ctx.logger.warning(
+                    "适配器没有文件上传接口 %s，无法发送 %s（api.get 返回 %r）", api, name, got
+                )
+                return False  # 非 NapCat 适配器：没有此接口
             result = self._unwrap_api(await self.ctx.api.call(api, params=params))
             if isinstance(result, dict):
                 status = str(result.get("status") or "").lower()
                 retcode = result.get("retcode")
                 if status in ("failed", "error") or (isinstance(retcode, int) and retcode != 0):
-                    self.ctx.logger.warning("发送结果文件失败：%s", result)
+                    self.ctx.logger.warning("发送结果文件失败 %s：%s", name, result)
                     return False
             return True
         except Exception as exc:  # noqa: BLE001
-            self.ctx.logger.warning("发送结果文件失败：%s", exc)
+            self.ctx.logger.warning("发送结果文件失败 %s：%s", name, exc)
             return False
 
     async def _notify_bot(self, state: _RunState, stream_id: str, full: bool = False) -> None:
@@ -2394,7 +2351,7 @@ class DshBridgePlugin(MaiBotPlugin):
         try:
             await self.ctx.maisaka.context.append(
                 stream_id,
-                segments=[{"type": "text", "content": f"【dsh 任务完成】\n{body}"}],
+                segments=[{"type": "text", "content": f"【大肥鱼干完活啦】\n{body}"}],
                 source_kind="dsh-bridge",
             )
         except Exception as exc:  # noqa: BLE001
@@ -2417,7 +2374,7 @@ class DshBridgePlugin(MaiBotPlugin):
             # 把 dsh 的实际报错带出来（否则用户只看到"执行失败"四个字）
             err = self._state_error_text(state).replace("\n", " ").strip()[:180]
             if err:
-                header = f"❌ dsh 任务执行失败：{err}"
+                header = f"❌ 大肥鱼干活失败了：{err}"
         final_text = state.final_copy().strip()
         # 默认静默：不发回执、不发转发，结果交给墨自己组织回复。
         # 只有任务里带 (all) 时才发完整过程；异常（失败/超时）仍提示一句，避免用户干等。
@@ -2428,12 +2385,12 @@ class DshBridgePlugin(MaiBotPlugin):
             if header:
                 receipt = header
             elif nodes:
-                receipt = "✅ dsh 任务完成（过程见转发）"
+                receipt = "✅ 大肥鱼干完啦（过程见转发）"
             else:
-                receipt = final_text[: conf.max_output_chars] if final_text else "(dsh 无输出)"
-            text_to_send = f"dsh：{receipt}"
+                receipt = final_text[: conf.max_output_chars] if final_text else "(大肥鱼 无输出)"
+            text_to_send = f"大肥鱼：{receipt}"
         elif header:
-            text_to_send = f"dsh：{header}"
+            text_to_send = f"大肥鱼：{header}"
         elif conf.direct_result:
             # 直接把结果发到聊天：只回灌给墨的话，墨不一定会开口，用户就什么都看不到
             label = f"（{self._run_label}）" if self._run_label else ""
@@ -2441,12 +2398,12 @@ class DshBridgePlugin(MaiBotPlugin):
                 limit = int(conf.direct_result_chars)
                 body = final_text[:limit]
                 truncated = len(final_text) > limit
-                text_to_send = f"✅ dsh 完成{label}：\n{body}"
+                text_to_send = f"✅ 大肥鱼完成{label}：\n{body}"
                 if truncated:
                     text_to_send += "\n…（完整内容见下一条 .md 文件）"
                 direct_truncated = truncated
             else:
-                text_to_send = f"dsh：✅ 任务完成{label}，但没有文字输出（可能只改了文件）。"
+                text_to_send = f"大肥鱼：✅ 任务完成{label}，但它没写字（大概只改了文件）(・_・;)"
         else:
             text_to_send = ""
 
@@ -2454,7 +2411,7 @@ class DshBridgePlugin(MaiBotPlugin):
             try:
                 await self.ctx.send.text(text_to_send, stream_id)
             except Exception:  # noqa: BLE001
-                self.ctx.logger.warning("dsh 回执发送失败", exc_info=True)
+                self.ctx.logger.warning("大肥鱼 回执发送失败", exc_info=True)
 
         # 本地留一份文本转录（便于排查）；被截断时把完整内容当文件发出去
         result_path: Optional[str] = None
@@ -2487,7 +2444,7 @@ class DshBridgePlugin(MaiBotPlugin):
         try:
             await self.ctx.send.forward(nodes, stream_id)
         except Exception:  # noqa: BLE001
-            self.ctx.logger.warning("dsh 转发发送失败", exc_info=True)
+            self.ctx.logger.warning("大肥鱼 转发发送失败", exc_info=True)
             # 兜底：转发失败时把最终答案补发出来（仅此一次，避免重复刷屏）
             if final_text:
                 try:
@@ -2497,7 +2454,7 @@ class DshBridgePlugin(MaiBotPlugin):
         return sent_deliv
 
     def _collect_deliverables(self, state: _RunState, ws: str) -> list[str]:
-        """从 dsh 事件流里收集 present 声明的交付文件（绝对路径，仅保留存在的）。"""
+        "从 大肥鱼 事件流里收集 present 声明的交付文件（绝对路径，仅保留存在的）。"
         paths: list[str] = []
         seen: set[str] = set()
         for evt in state.events_copy():
@@ -2566,7 +2523,14 @@ class DshBridgePlugin(MaiBotPlugin):
                     sent += 1
             if sent:
                 names = "、".join(Path(f).name for f in files)
-                await self.ctx.send.text(f"📦 dsh 产出文件（{len(files)} 个）：{names}", stream_id)
+                await self.ctx.send.text(f"📦 大肥鱼交作业啦（{len(files)} 个）：{names}", stream_id)
+            else:
+                # 一个都没发出去：必须告诉用户，别让 dsh 说"已经发你了"而实际没有
+                names = "、".join(Path(f).name for f in files)
+                await self.ctx.send.text(
+                    f"⚠️ 大肥鱼做好了文件（{names}），可墨这边没发出去（适配器没上传接口或被拒）…文件在服务器工作区里",
+                    stream_id,
+                )
         finally:
             if tmp_dir:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -2650,12 +2614,12 @@ class DshBridgePlugin(MaiBotPlugin):
         if not paths:
             return 0
         why = {
-            "timeout": "任务到时间上限了，被终止",
-            "stalled": "进程长时间没输出，被判死锁终止",
-            "loop": "输出陷入循环，被终止",
-            "error": "执行异常中断",
+            "timeout": "到时间上限了，被叫停",
+            "stalled": "好久没动静，被判死锁叫停",
+            "loop": "原地打转，被叫停",
+            "error": "中途出岔子",
             "stop": "你让它停下了",
-        }.get(reason or "", "任务异常终止")
+        }.get(reason or "", "任务意外结束了")
         names = "、".join(Path(p).name for p in paths)
         sent_paths: list[str] = []
         for p in paths:
@@ -2667,14 +2631,13 @@ class DshBridgePlugin(MaiBotPlugin):
         try:
             if sent_paths:
                 await self.ctx.send.text(
-                    f"📎 {why}，但工作区里已产出这些文件，先发给你："
+                    f"📎 {why}，不过工作区里已经有这些文件啦，先给你："
                     + "、".join(Path(p).name for p in sent_paths),
                     stream_id,
                 )
             else:
                 await self.ctx.send.text(
-                    f"📎 {why}；工作区里已产出：{names}"
-                    "（我这边没能把文件发出来，要看直接跟我说「把 <文件名> 发我」）",
+                    f"📎 {why}；工作区里已经有：{names}（墨这边没送出去，想看就跟我说「把 <文件名> 发我」）",
                     stream_id,
                 )
         except Exception:  # noqa: BLE001
@@ -2708,7 +2671,7 @@ class DshBridgePlugin(MaiBotPlugin):
                 self.ctx.logger.warning("提交待审插件 %s 失败：%s", path, exc)
 
     def _parse_plan(self, text: str) -> tuple[str, Optional[int], str]:
-        """从规划轮输出里提取计划、dsh 自定的时长、话题名。"""
+        "从规划轮输出里提取计划、大肥鱼 自定的时长、话题名。"
         plan = ""
         seconds: Optional[int] = None
         title = ""
@@ -2729,7 +2692,7 @@ class DshBridgePlugin(MaiBotPlugin):
         return plan, seconds, title
 
     async def _plan_task(self, task: str, ws: str) -> tuple[str, str]:
-        """第一轮：让 dsh 解析意图、给出操作计划，并顺带起一个话题名（不要求它估时长——它估不准）。"""
+        "第一轮：让 大肥鱼 解析意图、给出操作计划，并顺带起一个话题名（不要求它估时长——它估不准）。"
         prompt = (
             "你是任务规划器，只做规划、不执行。先分析下面这个任务要做什么，"
             "给出简洁的操作计划，并给这次工作起一个 12 字以内的话题名。"
@@ -2745,7 +2708,7 @@ class DshBridgePlugin(MaiBotPlugin):
         except Exception:  # noqa: BLE001
             self.ctx.logger.warning("规划轮失败，跳过规划", exc_info=True)
             plan, title = "", ""
-        self.ctx.logger.info("dsh 规划轮：话题名=%s，计划=%.120s", title or "-", plan)
+        self.ctx.logger.info("大肥鱼 规划轮：话题名=%s，计划=%.120s", title or "-", plan)
         return plan, title
 
     async def _run_and_report(
@@ -2769,6 +2732,7 @@ class DshBridgePlugin(MaiBotPlugin):
         if not session_id and topic:
             session_id = str(topic.get("session_id") or "")
         self._ipc_seen.clear()
+        self._clear_ipc_dirs(ws)  # 清掉上一轮（可能被重载/中断）遗留的提问与回答
         before = self._scan_plugin_dirs(ws)
         prompt = self._augment_task(task, ws)
         title = ""
@@ -2789,22 +2753,37 @@ class DshBridgePlugin(MaiBotPlugin):
                     "elapsed": time.time() - self._run_started,
                     "label": self._topic_label(topic) if topic else "",
                 }
-                await self.ctx.send.text("🛑 已按你的要求停下（还停在规划阶段，没开始干活）。", stream_id)
+                self._history.append(
+                    {
+                        "ts": time.strftime("%m-%d %H:%M:%S"),
+                        "task": task[:120],
+                        "ok": False,
+                        "reason": "stop",
+                        "summary": "规划阶段被停止",
+                    }
+                )
+                del self._history[:-10]
+                await self.ctx.send.text(
+                    "🛑 按你的要求停下了（还停在规划阶段，没开始干活），下次再叫大肥鱼就好～", stream_id
+                )
                 return
         # 运行期快照（供 /dsh peek 读取）
         self._run_label = self._topic_label(topic) if topic else ""
+        self._run_stream = stream_id
         self._run_ws = ws
         self._run_task_text = task
         self._run_budget = timeout
         self._run_started = time.time()
-        watcher = asyncio.create_task(self._watch_ipc_questions(ws, stream_id, ctx_map))
+        watcher = asyncio.create_task(
+            self._watch_ipc_questions(ws, stream_id, ctx_map, since=self._run_started)
+        )
         run_started = self._run_started
         try:
             reason, state = await self._execute(prompt, ws, timeout, session_id=session_id)
         except Exception as exc:  # noqa: BLE001
-            self.ctx.logger.error("dsh 任务执行异常: %s", exc, exc_info=True)
+            self.ctx.logger.error("大肥鱼 任务执行异常: %s", exc, exc_info=True)
             state = _RunState()
-            state.events.append({"type": "raw", "text": f"❌ 执行异常：{exc}"})
+            state.events.append({"type": "raw", "text": f"❌ 出了点岔子：{exc}"})
             reason = "error"
         finally:
             watcher.cancel()
@@ -2838,12 +2817,11 @@ class DshBridgePlugin(MaiBotPlugin):
         # 会话失效（被别的进程占用 / 已不存在）：换一条新会话重跑一次，别让用户干等
         issue = self._session_issue(self._state_error_text(state))
         if session_id and issue:
-            self.ctx.logger.warning("dsh 会话失效（%s），改用新会话重试一次", issue)
+            self.ctx.logger.warning("大肥鱼 会话失效（%s），改用新会话重试一次", issue)
             hint = (
-                "🔒 旧会话正被 dsh Web GUI 占用，已改用新会话继续（不继承上文）；"
-                "想接着用旧会话，先在 Web GUI 里关掉它再派活。"
+                "🔒 那条会话被 DSH Web GUI 占着，墨给大肥鱼开了条新的继续（旧上下文带不过来）～想接着用旧的，先在 Web GUI 里关掉它再派活"
                 if issue == "locked"
-                else "🔄 旧会话已不存在（可能被清理或归档），已开一条新会话继续（不继承上文）。"
+                else "🔄 旧会话不见啦（被清理或归档），墨开了一条新会话继续（旧上下文带不过来）"
             )
             try:
                 await self.ctx.send.text(hint, stream_id)
@@ -2880,7 +2858,7 @@ class DshBridgePlugin(MaiBotPlugin):
         try:
             sent_deliv = await self._report(state, reason, stream_id, ctx, full=full, notify=not waiting, ws=ws)
         except Exception:  # noqa: BLE001
-            self.ctx.logger.warning("dsh 结果回传失败", exc_info=True)
+            self.ctx.logger.warning("大肥鱼 结果回传失败", exc_info=True)
         # 超时/异常终止且 dsh 没来得及 present：把本轮新产出的文件救回来发出去，别让用户白等
         if (
             reason in ("timeout", "stalled", "loop", "error", "stop")
@@ -2899,8 +2877,7 @@ class DshBridgePlugin(MaiBotPlugin):
         if reason == "failed" and ("no api key" in err_low or "missing_credential" in err_low):
             try:
                 await self.ctx.send.text(
-                    "🔑 dsh 找不到可用的 API key：把 DEEPSEEK_API_KEY 配到当前 DSH_HOME 的凭据里，"
-                    "或让麦麦进程带上该环境变量（dsh.dsh_home 指向哪套就用哪套凭据）。",
+                    "🔑 大肥鱼没有可用的 API key 呢…把 DEEPSEEK_API_KEY 配到当前 DSH_HOME 的凭据里，或者让麦麦带上这个环境变量（大肥鱼.dsh_home 指哪套就用哪套凭据）",
                     stream_id,
                 )
             except Exception:  # noqa: BLE001
@@ -2909,13 +2886,13 @@ class DshBridgePlugin(MaiBotPlugin):
             try:
                 await self._start_ask(ask, state, stream_id, ctx, full, timeout, depth)
             except Exception:  # noqa: BLE001
-                self.ctx.logger.warning("发送 dsh 提问失败", exc_info=True)
+                self.ctx.logger.warning("发送 大肥鱼 提问失败", exc_info=True)
         elif ask:
             try:
                 await self.ctx.send.text(
-                    "❓ dsh 想再问你一次，但这次不能续跑（"
+                    "❓ 大肥鱼还想再问你一次，但这轮没法续跑了（"
                     + ("已达到提问轮数上限" if state.session_id else "没拿到会话 id")
-                    + "），这轮就到这里。",
+                    + "），这轮就到这里～",
                     stream_id,
                 )
             except Exception:  # noqa: BLE001
@@ -2925,7 +2902,7 @@ class DshBridgePlugin(MaiBotPlugin):
             final_text = state.final_copy().strip()
             if final_text:
                 try:
-                    await self.ctx.send.text("✅ dsh 继续跑完了：\n" + final_text[:2000], stream_id)
+                    await self.ctx.send.text("✅ 大肥鱼接着跑完了：\n" + final_text[:2000], stream_id)
                 except Exception:  # noqa: BLE001
                     pass
         try:
@@ -2983,7 +2960,7 @@ class DshBridgePlugin(MaiBotPlugin):
 
     @staticmethod
     def _looks_failed(text: str) -> bool:
-        """从 dsh 输出里识别"看起来成功、实际失败"的情况（主要是缺少凭据）。"""
+        "从 大肥鱼 输出里识别\"看起来成功、实际失败\"的情况（主要是缺少凭据）。"
         low = (text or "").lower()
         # 只认 dsh 自己抛出的明确错误码；普通报告里提到 "api key" 不算失败
         markers = (
@@ -3023,10 +3000,10 @@ class DshBridgePlugin(MaiBotPlugin):
         try:
             cred = Path.home() / ".dsh" / ".credentials.yaml"
             if cred.is_file() and env_name in cred.read_text(encoding="utf-8", errors="ignore"):
-                return f"已配置（dsh 凭据库 {cred}）"
+                return f"已配置（大肥鱼凭据库 {cred}）"
         except Exception:  # noqa: BLE001
             pass
-        return f"未配置（dsh 需先登录，或提供 {env_name} 环境变量 / 插件 api_key）"
+        return f"没配置（大肥鱼得先登录，或提供 {env_name} 环境变量 / 插件 api_key）"
 
     _ALL_RE = re.compile(r"[（(]\s*all\s*[)）]", re.IGNORECASE)
 
@@ -3045,19 +3022,7 @@ class DshBridgePlugin(MaiBotPlugin):
     # ── 命令：/dsh（任务 + 全部话题指令都收在 /dsh 下） ─────────
 
     _DSH_HELP = (
-        "🛠 /dsh 用法（话题指令都在 /dsh 下）\n"
-        "  /dsh <任务>                     在当前话题派活（没有话题会自动建；默认不限时）\n"
-        "  /dsh #3 <任务>                  指定话题派活\n"
-        "  /dsh peek | 状态 | 进展          看它现在在干什么\n"
-        "  /dsh stop [全部]                 停止当前任务（全部=连排队的一起清掉）\n"
-        "  /dsh new | 新建 | est            新建话题\n"
-        "  /dsh set <名> | 修改话题 <名>     改当前话题名\n"
-        "  /dsh del [#3] | 删除话题 [#3]     归档（7 天后自动删除，可 restore）\n"
-        "  /dsh restore #3 | 恢复 #3         恢复归档话题\n"
-        "  /dsh list | 话题 [#3]            列出 / 切换话题\n"
-        "  /dsh help                       显示这段帮助\n"
-        "\n任务末尾加 (all) 可看完整合并转发过程；以 -- 开头的正文强制当任务（如 /dsh -- new 功能调研）\n"
-        "想给单次任务设时间上限：/dsh --timeout 600 <任务>（默认不设上限）"
+        "🛠 /dsh 用法（大肥鱼的活儿都收在这儿啦～）\n  /dsh <任务>                     让大肥鱼干活（没话题会自动开一个；默认不限时）\n  /dsh #3 <任务>                  指定话题派活\n  /dsh peek | 状态 | 进展          偷看大肥鱼现在在干啥\n  /dsh stop [全部]                 喊停当前活儿（加「全部」连排队的也清掉）\n  /dsh new | 新建 | est            开个新话题\n  /dsh set <名> | 修改话题 <名>     给当前话题改个名\n  /dsh del [#3] | 删除话题 [#3]     收进档案袋（7 天后销毁，可 restore）\n  /dsh restore #3 | 恢复 #3         从档案袋里捞回来\n  /dsh list | 话题 [#3]            看看有哪些话题 / 切过去\n  /dsh help                       就是这段啦\n\n任务末尾加 (all) 能看完整合并转发过程；以 -- 开头的正文强制当任务（如 /dsh -- new 功能调研）\n想给单次任务设时限：/dsh --timeout 600 <任务>（默认不设）"
     )
 
     _STOP_RE = re.compile(r"^(?:stop|停止|停下|别做了)(?:\s+(?P<arg>.+))?$", re.IGNORECASE)
@@ -3084,31 +3049,30 @@ class DshBridgePlugin(MaiBotPlugin):
             self._queue.clear()
         if not self._running:
             if cleared:
-                return f"💤 现在没有在跑的任务；已清掉 {cleared} 个排队任务。"
+                return f"💤 现在没有在跑的活儿；顺手清掉了 {cleared} 个排队的～"
             if self._queue:
                 return (
-                    f"💤 现在没有在跑的任务，但有 {len(self._queue)} 个排队任务；"
-                    "要一起清掉发 /dsh stop 全部"
+                    f"💤 现在没在跑，但有 {len(self._queue)} 个排队的活儿；要一起清掉发 /dsh stop 全部"
                 )
-            return "💤 现在没有在跑的任务。"
+            return "💤 现在没有在跑的活儿～"
         self._stop_requested = True
         pid = self._current_pid
         self.ctx.logger.info("收到 /dsh stop（pid=%s, clear_queue=%s）", pid, clear_queue)
         tail = f"；排队中的 {cleared} 个也一起清掉了" if cleared else ""
-        return f"🛑 收到，正在停止当前任务…（通常几秒内结束，产出文件会尽量发给你）{tail}"
+        return f"🛑 收到，正在停止当前任务…给大肥鱼几秒钟收尾（一般几秒，做好的文件会尽量留给你）{tail}"
 
     def _cmd_peek(self, stream_id: str) -> str:
-        """看 dsh 现在在干什么（运行中给实时快照；空闲给最近一次结果）。"""
+        "看 大肥鱼 现在在干什么（运行中给实时快照；空闲给最近一次结果）。"
         queue_note = f"（另有 {len(self._queue)} 个排队）" if self._queue else ""
         state = self._run_state
         if not self._running or state is None:
-            lines = [f"😴 现在没在跑任务{queue_note}。"]
+            lines = [f"😴 现在没在跑活儿哦{queue_note}～"]
             last = self._last_run or {}
             if last:
                 reason = last.get("reason")
                 flag = "成功" if not reason else f"结束（{reason}）"
                 lines.append(
-                    f"最近一次：{str(last.get('task') or '')[:50]} · {flag} · 用时 {self._dur_text(last.get('elapsed') or 0)}"
+                    f"最近一次：{str(last.get('task') or '')[:50]} · {flag} · 用了 {self._dur_text(last.get('elapsed') or 0)}"
                 )
             return "\n".join(lines)
 
@@ -3139,13 +3103,13 @@ class DshBridgePlugin(MaiBotPlugin):
             recent = recent[-3:]
 
         label = f"{self._run_label} " if self._run_label else ""
-        lines = [f"👀 {label}正在干活：已 {self._dur_text(elapsed)}"]
+        lines = [f"👀 {label}大肥鱼正在干活，已经 {self._dur_text(elapsed)} 啦"]
         where = f"第 {turn} 轮第 {step} 步" if step else "刚起步"
-        lines.append(f"进度：{where} · 最后动静 {self._dur_text(max(0.0, time.time() - last_ts))}前")
+        lines.append(f"进度：{where} · 最后一次动静在 {self._dur_text(max(0.0, time.time() - last_ts))}前")
         if self._ipc_waiting:
             lines.append("状态：⏳ 在等你回答它的提问（回一句话就是答案）")
         elif tool:
-            lines.append(f"现在在跑：{tool}" + (f" · {tool_arg}" if tool_arg else ""))
+            lines.append(f"现在跑着：{tool}" + (f" · {tool_arg}" if tool_arg else ""))
         if recent:
             lines.append("最近动静：")
             lines.extend(f"  · {r}" for r in recent)
@@ -3166,14 +3130,14 @@ class DshBridgePlugin(MaiBotPlugin):
 
     @Command(
         "dsh",
-        description="把任务外包给 DeepSeek Harness (dsh)；话题管理也收在 /dsh 下（new/set/del/restore/list/help）",
+        description="把活儿外包给大肥鱼（DeepSeek Harness）；话题管理也收在 /dsh 下（new/set/del/restore/list/help）",
         pattern=r"^/dsh(?:\s+(?P<body>.+))?$",
     )
     async def handle_dsh(self, stream_id: str = "", **kwargs: Any):
         if not self.config.plugin.enabled:
-            return False, "插件未启用", True
+            return False, "插件没启用呢", True
         if not self._is_allowed(kwargs):
-            await self.ctx.send.text("你没有权限使用 /dsh", stream_id)
+            await self.ctx.send.text("唔…你没有权限用 /dsh 哦 (｡•́︿•̀｡)", stream_id)
             return False, "无权限", True
 
         if stream_id:
@@ -3200,9 +3164,7 @@ class DshBridgePlugin(MaiBotPlugin):
         # 实验窗口内：/dsh 命令临时禁用（只留实验关闭/状态，上面已处理）
         if self._agent_armed():
             await self.ctx.send.text(
-                f"🧪 实验模式已开启（剩余 {self._agent_remaining_text()}），/dsh 命令暂时禁用"
-                "（/dsh stop、/dsh peek 仍可用）。\n"
-                "直接跟墨说要做什么即可（它会自己建/切话题、派活）；要关闭发 /dsh 实验关闭。",
+                f"🧪 实验模式已开启（剩余 {self._agent_remaining_text()}），/dsh 命令暂时收起来了（/dsh stop、/dsh peek 还能用）\n直接跟墨说要做什么就好，墨会自己建/切话题、派活～想收摊发 /dsh 实验关闭",
                 stream_id,
             )
             return True, "实验模式", True
@@ -3247,10 +3209,10 @@ class DshBridgePlugin(MaiBotPlugin):
             if topic_id:
                 topic = self._topics.get(topic_id)
                 if not topic or stream_id not in (topic.get("chats") or []):
-                    await self.ctx.send.text(f"没有 #{topic_id} 这个话题（/dsh list 看现有话题）", stream_id)
+                    await self.ctx.send.text(f"没有 #{topic_id} 这个话题呢（/dsh list 看看有哪些）", stream_id)
                     return False, "无此话题", True
                 if topic.get("archived_at"):
-                    await self.ctx.send.text(f"#{topic_id} 已归档，先 /dsh restore #{topic_id} 才能继续", stream_id)
+                    await self.ctx.send.text(f"#{topic_id} 已归档啦（收进档案袋），先 /dsh restore #{topic_id} 才能继续", stream_id)
                     return False, "已归档", True
                 self._topic_current[stream_id] = topic_id
                 self._save_topics()
@@ -3272,17 +3234,17 @@ class DshBridgePlugin(MaiBotPlugin):
             if len(self._queue) < int(self.config.topic.queue_max):
                 self._queue.append(item)
                 await self.ctx.send.text(
-                    f"🚦 {label}dsh 正在忙，任务已排队（第 {len(self._queue)} 位）", stream_id
+                    f"🚦 {label}大肥鱼还忙着呢，先给你排个队（第 {len(self._queue)} 位）～", stream_id
                 )
                 return True, "已排队", True
-            await self.ctx.send.text("已有 dsh 任务在执行，队列也满了，请稍后再试。", stream_id)
+            await self.ctx.send.text("大肥鱼还在干活，队列也满了…稍等一会儿再来吧 (´･_･`)", stream_id)
             return False, "忙碌", True
 
         if self._drop_pending(stream_id):
-            await self.ctx.send.text("（之前 dsh 的问题已作废，按这条新指令走）", stream_id)
+            await self.ctx.send.text("（之前大肥鱼的问题作废啦，按这条新指令走～）", stream_id)
 
         self._running = True
-        await self.ctx.send.text(f"🛠 {label}已受理（{self._budget_text(to)}）：{body[:80]}", stream_id)
+        await self.ctx.send.text(f"🛠 {label}已受理～大肥鱼马上开工（{self._budget_text(to)}）：{body[:80]}", stream_id)
         asyncio.create_task(
             self._run_and_report(
                 body,
@@ -3308,9 +3270,9 @@ class DshBridgePlugin(MaiBotPlugin):
         """话题指令的通用前置检查；返回错误文案，None 表示通过。"""
         group_id = str(self._extract_ctx(kwargs).get("group_id") or "")
         if not self.config.topic.enabled:
-            return "话题功能已在插件配置里关闭（topic.enabled=false）"
+            return "话题功能在插件配置里关着（topic.enabled=false）哦"
         if not self._topic_mode_for(stream_id, group_id):
-            return "话题功能只在私聊启用"
+            return "话题功能只在私聊能用呢"
         return None
 
     def _dispatch_topic_command(
@@ -3341,8 +3303,7 @@ class DshBridgePlugin(MaiBotPlugin):
             return err
         topic = self._create_topic(stream_id)
         return (
-            f"🗒 已创建 {self._topic_label(topic)}；之后的任务会落在这个话题"
-            f"（可用 /dsh set <新名字> 改名）"
+            f"🗒 开好啦：{self._topic_label(topic)}～之后派活都归它（想改名发 /dsh set <新名字>）"
         )
 
     def _cmd_rename_topic(self, stream_id: str, kwargs: dict[str, Any], name: str) -> str:
@@ -3353,11 +3314,11 @@ class DshBridgePlugin(MaiBotPlugin):
             return "用法：/dsh set <新名字> 或 /dsh 修改话题 <新名字>"
         topic = self._current_topic(stream_id)
         if not topic or topic.get("archived_at"):
-            return "当前没有可用话题；先发 /dsh <任务> 自动建一个，或 /dsh new"
+            return "现在还没有能用的话题呢…先发 /dsh <任务> 让大肥鱼开一个，或者 /dsh new"
         clean = re.sub(r"\s+", " ", name).strip().strip("「」\"'")
         topic["name"] = clean[: max(4, int(self.config.topic.name_max_chars))]
         self._save_topics()
-        return f"✏️ {self._topic_label(topic)} 已改名"
+        return f"✏️ {self._topic_label(topic)} 改好名字啦～"
 
     def _cmd_archive_topic(self, stream_id: str, kwargs: dict[str, Any], spec: str) -> str:
         err = self._topic_cmd_guard(stream_id, kwargs)
@@ -3365,16 +3326,15 @@ class DshBridgePlugin(MaiBotPlugin):
             return err
         topic = self._find_topic(stream_id, spec) if spec else self._current_topic(stream_id)
         if not topic:
-            return "没找到这个话题（/dsh list 看现有话题）"
+            return "墨没找到这个话题呢（/dsh list 看看有哪些）"
         if topic.get("archived_at"):
-            return f"{self._topic_label(topic)} 已经归档了（/dsh restore #{topic['id']} 可恢复）"
+            return f"{self._topic_label(topic)} 早就收进档案袋啦（/dsh restore #{topic['id']} 能捞回来）"
         if self._running and int(topic.get("id") or 0) == int(self._topic_current.get(stream_id) or 0):
-            return "dsh 正在这个话里干活，等它结束再归档。"
+            return "大肥鱼正忙着这个话呢，等它忙完再收吧～"
         self._archive_topic(topic)
         keep = int(self.config.topic.archive_keep_days)
         return (
-            f"🗄 {self._topic_label(topic)} 已归档，{keep} 天后自动删除；"
-            f"期间可用 /dsh restore #{topic['id']}"
+            f"🗄 {self._topic_label(topic)} 已归档～{keep} 天后自动销毁，这期间 /dsh restore #{topic['id']} 还能捞回来"
         )
 
     def _cmd_restore_topic(self, stream_id: str, kwargs: dict[str, Any], spec: str) -> str:
@@ -3387,9 +3347,9 @@ class DshBridgePlugin(MaiBotPlugin):
         if not topic:
             return "没找到这个话题（/dsh list 看现有话题）"
         if not topic.get("archived_at"):
-            return f"{self._topic_label(topic)} 本来就在用，不需要恢复"
+            return f"{self._topic_label(topic)} 本来就好好的，不用捞～"
         self._restore_topic(topic)
-        return f"♻️ {self._topic_label(topic)} 已恢复，之后的任务会继续用它。"
+        return f"♻️ {self._topic_label(topic)} 已恢复～之后的活儿还归它"
 
     def _cmd_list_topics(self, stream_id: str, kwargs: dict[str, Any], spec: str) -> str:
         err = self._topic_cmd_guard(stream_id, kwargs)
@@ -3400,7 +3360,7 @@ class DshBridgePlugin(MaiBotPlugin):
             if not topic:
                 return "没找到这个话题（/dsh list 看现有话题）"
             if topic.get("archived_at"):
-                return f"📦 {self._topic_label(topic)} 已归档，先 /dsh restore #{topic['id']} 才能继续用。"
+                return f"📦 {self._topic_label(topic)} 已归档，先 /dsh restore #{topic['id']} 才能继续用"
             self._topic_current[stream_id] = int(topic["id"])
             self._save_topics()
             files = 0
@@ -3408,14 +3368,11 @@ class DshBridgePlugin(MaiBotPlugin):
             if up.is_dir():
                 files = len([x for x in up.iterdir() if x.is_file() and x.name != UPLOAD_INDEX_NAME])
             return (
-                f"📌 已切到 {self._topic_label(topic)}\n"
-                f"会话：{str(topic.get('session_id') or '未建立（下个任务建）')[:24]}\n"
-                f"目录：{topic.get('dir')}\n"
-                f"附件：{files} 个 · 最后使用 {self._age_text(topic.get('last_used_at') or 0)}"
+                f"📌 切到 {self._topic_label(topic)} 啦\n会话：{str(topic.get('session_id') or '还没建（下个任务建）')[:24]}\n目录：{topic.get('dir')}\n附件：{files} 个 · 最后使用 {self._age_text(topic.get('last_used_at') or 0)}"
             )
         items = sorted(self._topics_of_chat(stream_id), key=lambda t: int(t.get("id") or 0))
         current = self._topic_current.get(stream_id)
-        lines = [f"📚 话题列表（当前 {self._topic_label(self._topics.get(int(current))) if current else '无'}）"]
+        lines = [f"📚 话题列表（现在在 {self._topic_label(self._topics.get(int(current))) if current else '无'}）"]
         for t in items:
             if t.get("archived_at"):
                 left = int(self.config.topic.archive_keep_days * 86400 - (time.time() - float(t["archived_at"])))
@@ -3426,7 +3383,7 @@ class DshBridgePlugin(MaiBotPlugin):
                 f"#{t['id']}（{t['name']}）· 最后使用 {self._age_text(t.get('last_used_at') or 0)}{mark}"
             )
         if len(lines) == 1:
-            lines.append("还没有话题：/dsh <任务> 会自动建一个，或 /dsh new")
+            lines.append("还没有话题呢～/dsh <任务> 会自动开一个，或者 /dsh new")
         return "\n".join(lines)
 
     # ── 工具：dsh_run（供 Planner 自主下单） ──────────────────
@@ -3434,17 +3391,14 @@ class DshBridgePlugin(MaiBotPlugin):
     @Tool(
         "dsh_run",
         description=(
-            "把较重任务外包给 dsh 在服务器执行（写插件 / 跑脚本 / 深度调研）。"
-            "默认不限时（用户可用 /dsh stop 随时停）；只有确实需要设上限时才填 timeout_seconds。"
-            "仅当任务明显超出即时聊天能力时使用。"
-            "默认结果只回给你（由你组织回复，不发聊天记录）；若用户明确要「看全过程」，在 task 末尾加 (all)。"
+            "把较重任务外包给 大肥鱼 在服务器执行（写插件 / 跑脚本 / 深度调研）。默认不限时（用户可用 /dsh stop 随时停）；只有确实需要设上限时才填 timeout_seconds。仅当任务明显超出即时聊天能力时使用。默认结果只回给你（由你组织回复，不发聊天记录）；若用户明确要「看全过程」，在 task 末尾加 (all)。"
         ),
         visibility="visible",
         parameters=[
             ToolParameterInfo(
                 name="task",
                 param_type=ToolParamType.STRING,
-                description="要 dsh 完成的任务描述",
+                description="要 大肥鱼 完成的任务描述",
                 required=True,
             ),
             ToolParameterInfo(
@@ -3475,7 +3429,7 @@ class DshBridgePlugin(MaiBotPlugin):
         if not task:
             return {"success": False, "error": "缺少 task"}
         if self._reject_busy():
-            return {"success": False, "error": "已有 dsh 任务在执行"}
+            return {"success": False, "error": "已有 大肥鱼 任务在执行"}
 
         # 新任务开始：之前那个没回答的提问作废
         self._drop_pending(stream_id)
@@ -3524,7 +3478,7 @@ class DshBridgePlugin(MaiBotPlugin):
 
     @Tool(
         "dsh_topic_list",
-        description="【实验】列出当前私聊的 dsh 话题（编号/名字/最后使用/当前）。需要实验功能已开启。",
+        description="【实验】列出当前私聊的 大肥鱼 话题（编号/名字/最后使用/当前）。需要实验功能已开启。",
         visibility="visible",
         parameters=[],
     )
@@ -3541,7 +3495,7 @@ class DshBridgePlugin(MaiBotPlugin):
 
     @Tool(
         "dsh_topic_new",
-        description="【实验】新建一个 dsh 话题并切过去（用户说“开个新话题/换个方向”时用）。",
+        description="【实验】新建一个 大肥鱼 话题并切过去（用户说“开个新话题/换个方向”时用）。",
         visibility="visible",
         parameters=[
             ToolParameterInfo(name="name", param_type=ToolParamType.STRING, description="话题名（≤12 字，可省略）", required=False)
@@ -3574,8 +3528,7 @@ class DshBridgePlugin(MaiBotPlugin):
     @Tool(
         "dsh_topic_archive",
         description=(
-            "【实验】归档一个 dsh 话题（7 天后自动删除，期间可 restore）。**破坏性操作**："
-            "必须先向用户确认，用户明确同意后再传 confirm=true 调用。topic 可填 #3 或话题名，省略=当前话题。"
+            "【实验】归档一个 大肥鱼 话题（7 天后自动删除，期间可 restore）。**破坏性操作**：必须先向用户确认，用户明确同意后再传 confirm=true 调用。topic 可填 #3 或话题名，省略=当前话题。"
         ),
         visibility="visible",
         parameters=[
@@ -3617,8 +3570,7 @@ class DshBridgePlugin(MaiBotPlugin):
     @Tool(
         "dsh_status",
         description=(
-            "查看 dsh 桥的真实状态：是否正在执行任务、最近几次任务的成败与摘要、定时任务数量、凭据是否配置。"
-            "回答「dsh 在干嘛」「刚才那个任务成功了吗」「dsh 能用吗」之前必须先查这个，不要凭印象编。"
+            "查看 大肥鱼 桥的真实状态：是否正在执行任务、最近几次任务的成败与摘要、定时任务数量、凭据是否配置。回答「大肥鱼 在干嘛」「刚才那个任务成功了吗」「大肥鱼 能用吗」之前必须先查这个，不要凭印象编。"
         ),
         visibility="visible",
         parameters=[],
@@ -3648,13 +3600,12 @@ class DshBridgePlugin(MaiBotPlugin):
     @Tool(
         "schedule_task",
         description=(
-            "新建一个定时任务：到点后把 prompt 交给 dsh 执行、结果发回当前聊天。"
-            "after_seconds / every_seconds / at 三者只填一个。"
+            "新建一个定时任务：到点后把 prompt 交给 大肥鱼 执行、结果发回当前聊天。after_seconds / every_seconds / at 三者只填一个。"
         ),
         visibility="visible",
         parameters=[
             ToolParameterInfo(name="title", param_type=ToolParamType.STRING, description="任务短标题", required=True),
-            ToolParameterInfo(name="prompt", param_type=ToolParamType.STRING, description="到点交给 dsh 的任务描述", required=True),
+            ToolParameterInfo(name="prompt", param_type=ToolParamType.STRING, description="到点交给 大肥鱼 的任务描述", required=True),
             ToolParameterInfo(name="after_seconds", param_type=ToolParamType.INTEGER, description="N 秒后执行一次", required=False),
             ToolParameterInfo(name="every_seconds", param_type=ToolParamType.INTEGER, description="每 N 秒重复（≥60）", required=False),
             ToolParameterInfo(name="at", param_type=ToolParamType.STRING, description="指定时刻（ISO，带时区），如 2026-10-03T09:00:00+08:00", required=False),

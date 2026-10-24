@@ -413,7 +413,7 @@ async def main():
 
     print("\n===== 19) /dsh peek：空闲时给最近一次 =====")
     await run_cmd(p, "/dsh peek", "peek")
-    assert "没在跑任务" in p.ctx.send.joined(), p.ctx.send.joined()
+    assert "没在跑活儿" in p.ctx.send.joined(), p.ctx.send.joined()
 
     print("\n===== 20) /dsh peek 运行中 + /dsh stop 停止（不限时也能停） =====")
     long_task = "先执行 bash 命令：sleep 45，然后再回复一句：睡完了"
@@ -441,8 +441,10 @@ async def main():
     assert stopped, "发 /dsh stop 之后任务没停下来"
     hist = p._history[-1] if p._history else {}
     print("停止后的记录:", hist.get("reason"), "|", str(hist.get("task"))[:40])
-    assert hist.get("reason") == "stop", hist
-    assert "停下了" in p.ctx.send.joined(), p.ctx.send.joined()
+    joined_stop = p.ctx.send.joined()
+    assert "停下了" in joined_stop, joined_stop
+    # 可能在规划阶段就被停（那时还没进正式执行）：两种都算通过
+    assert hist.get("reason") == "stop" or "规划阶段" in joined_stop, hist
 
     print("\n===== 21) dsh 报错即退出（会话被占用）→ 判失败 + 自动换新会话 + 用户看到原因 =====")
     fake = Path("/tmp/fake-dsh-lock")
@@ -465,7 +467,7 @@ async def main():
         joined = p.ctx.send.joined()
         print("[输出]", joined[:300].replace("\n", " / "))
         assert "🔒" in joined, f"没有会话占用提示：{joined}"
-        assert "执行失败" in joined, f"没有失败提示：{joined}"
+        assert "干活失败" in joined, f"没有失败提示：{joined}"
         hist = p._history[-1] if p._history else {}
         print("记录:", hist.get("reason"), "|", str(hist.get("summary"))[:80])
         assert hist.get("reason") == "failed", hist
@@ -476,7 +478,7 @@ async def main():
         await p._run_and_report("测试：再干一次", STREAM, 0, {"user_id": UID})
         joined2 = p.ctx.send.joined()
         print("[第二次输出]", joined2[:200].replace("\n", " / "))
-        assert "执行失败" in joined2, f"静默失败：{joined2}"
+        assert "干活失败" in joined2, f"静默失败：{joined2}"
     finally:
         p.config.dsh.command = orig_cmd
         p.config.dsh.extra_args = orig_extra
@@ -523,7 +525,7 @@ async def main():
         joined = p.ctx.send.joined()
         print("[输出]", joined[:260].replace("\n", " / "))
         assert "🔄" in joined, f"没有会话不存在提示：{joined}"
-        assert "执行失败" in joined, f"没有失败提示：{joined}"
+        assert "干活失败" in joined, f"没有失败提示：{joined}"
         hist = p._history[-1] if p._history else {}
         assert hist.get("reason") == "failed", hist
     finally:
@@ -550,7 +552,7 @@ async def main():
         await p._run_and_report("测试：给个结果", STREAM, 0, {"user_id": UID})
         joined = p.ctx.send.joined()
         print("[输出]", joined[:220].replace("\n", " / "))
-        assert "✅ dsh 完成" in joined, f"结果没直接发出来：{joined}"
+        assert "✅ 大肥鱼完成" in joined, f"结果没直接发出来：{joined}"
         assert "这是 dsh 的最终结果" in joined, joined
         # 空输出也要有回执，不能静默
         fake_empty = Path("/tmp/fake-dsh-empty")
@@ -562,10 +564,45 @@ async def main():
         await p._run_and_report("测试：啥也不说", STREAM, 0, {"user_id": UID})
         joined2 = p.ctx.send.joined()
         print("[空输出]", joined2[:180].replace("\n", " / "))
-        assert "没有文字输出" in joined2, f"空输出静默了：{joined2}"
+        assert "没写字" in joined2, f"空输出静默了：{joined2}"
     finally:
         p.config.dsh.command = orig_cmd
         p.config.dsh.extra_args = orig_extra
+
+    print("\n===== 24) 陈旧提问清理 + 文件发送失败要可见 =====")
+    # 24a：上一轮遗留的提问文件，新一轮开始时应被清掉
+    cur_topic = p._topics.get(p._topic_current.get(STREAM) or 0)
+    ws24 = str(p._topic_dir(cur_topic)) if cur_topic else p._workspace(STREAM)
+    qdir = Path(ws24) / "ipc" / "questions"
+    qdir.mkdir(parents=True, exist_ok=True)
+    stale = qdir / "q-stale.json"
+    stale.write_text('{"question":"上一轮遗留的问题","options":[]}', encoding="utf-8")
+    os.utime(stale, (time.time() - 600, time.time() - 600))
+    p._clear_ipc_dirs(ws24)
+    assert not stale.exists(), "陈旧提问没被清掉"
+    print("陈旧提问已清理 OK")
+    # 24b：api.get 两种返回形态都要认
+    assert p._api_meta({"success": True, "api": {"name": "x"}}) == {"name": "x"}
+    assert p._api_meta({"name": "x", "description": "y"}) == {"name": "x", "description": "y"}
+    assert p._api_meta(None) is None
+    p.ctx.send.clear()
+    # 24c：适配器没有文件上传接口时，要给用户一句「没发出去」
+    fake_file = Path(ws24) / "报告.docx"
+    fake_file.write_bytes(b"PK\x03\x04fake")
+    st24 = bmod._RunState()
+    st24.events.append(
+        {"type": "tool_call", "tool": "present", "input": {"files": [{"path": "报告.docx"}]}}
+    )
+    saved = p.ctx.api.NAPCAT
+    p.ctx.api.NAPCAT = set()  # 模拟非 NapCat 适配器
+    try:
+        sent = await p._send_deliverables(st24, STREAM, {"user_id": UID}, ws=ws24)
+        joined = p.ctx.send.joined()
+        print("[无接口输出]", joined[:200].replace("\n", " / "))
+        assert sent == 0, sent
+        assert "没发出去" in joined, f"文件发失败却静默：{joined}"
+    finally:
+        p.ctx.api.NAPCAT = saved
 
     print("\n===== 全部通过 =====")
     srv.shutdown()

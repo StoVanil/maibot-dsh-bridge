@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "ji-or-ji.maibot-dsh-bridge",
-  "version": "0.11.3",
+  "version": "0.11.5",
   "name": "麦麦×dsh 桥",
-  "description": "把 DeepSeek Harness (dsh) 接入麦麦：话题制会话（/dsh 统一指令）、持久会话、独立工作区、dsh 提问（MCP ask，同一进程继续）、QQ 发文件给 dsh、present 交付文件回传、Office 文档技能、定时任务；/dsh stop 停止、/dsh peek 看进展；实验功能：设置里临时开启 24h 后墨可自主调度。基于 ji-or-ji/maibot-dsh-bridge 的派生版本。",
+  "description": "把 DeepSeek Harness (大肥鱼) 接入麦麦：话题制会话（/大肥鱼 统一指令）、持久会话、独立工作区、大肥鱼 提问（MCP ask，同一进程继续）、QQ 发文件给 大肥鱼、present 交付文件回传、Office 文档技能、定时任务；/大肥鱼 stop 停止、/大肥鱼 peek 看进展；实验功能：设置里临时开启 24h 后墨可自主调度。基于 ji-or-ji/maibot-大肥鱼-bridge 的派生版本。",
   "author": {
     "name": "ji-or-ji",
     "url": "https://github.com/ji-or-ji"
