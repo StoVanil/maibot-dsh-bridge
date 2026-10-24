@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """桥插件 P1（话题层）集成测试：假 Host + 真 dsh。
 
-用法（本仓库根目录下）：
-  BRIDGE_DSH_ARGS="--profile headless" python tests/bridge_harness.py
+用法（服务器上）：
+  <MAIBOT_HOME>/.venv/bin/python /tmp/bridge_harness.py
 """
 import asyncio
 import json
@@ -16,9 +16,7 @@ import socketserver
 import functools
 from pathlib import Path
 
-PLUGIN_DIR = os.environ.get(
-    "BRIDGE_PLUGIN_DIR", str(Path(__file__).resolve().parent.parent)
-)
+PLUGIN_DIR = os.environ.get("BRIDGE_PLUGIN_DIR", "<MAIBOT_HOME>/plugins/maibot-dsh-bridge")
 sys.path.insert(0, PLUGIN_DIR)
 import plugin as bmod  # noqa: E402
 
@@ -445,6 +443,43 @@ async def main():
     print("停止后的记录:", hist.get("reason"), "|", str(hist.get("task"))[:40])
     assert hist.get("reason") == "stop", hist
     assert "停下了" in p.ctx.send.joined(), p.ctx.send.joined()
+
+    print("\n===== 21) dsh 报错即退出（会话被占用）→ 判失败 + 自动换新会话 + 用户看到原因 =====")
+    fake = Path("/tmp/fake-dsh-lock")
+    fake.write_text(
+        "#!/bin/sh\n"
+        "echo '{\"type\":\"error\",\"message\":\"session \\\"session-dead\\\" is already owned by an active write handle\"}'\n"
+        "echo 'dsh: session \"session-dead\" is already owned by an active write handle' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    orig_cmd, orig_extra = p.config.dsh.command, p.config.dsh.extra_args
+    p.config.dsh.command = str(fake)
+    p.config.dsh.extra_args = ""
+    try:
+        p._history.clear()
+        p.ctx.send.clear()
+        # 话题里带着一个（被占用的）会话 id → 应触发「换新会话重试」提示
+        await p._run_and_report("测试：随便干点活", STREAM, 0, {"user_id": UID})
+        joined = p.ctx.send.joined()
+        print("[输出]", joined[:300].replace("\n", " / "))
+        assert "🔒" in joined, f"没有会话占用提示：{joined}"
+        assert "执行失败" in joined, f"没有失败提示：{joined}"
+        hist = p._history[-1] if p._history else {}
+        print("记录:", hist.get("reason"), "|", str(hist.get("summary"))[:80])
+        assert hist.get("reason") == "failed", hist
+        assert "active write handle" in str(hist.get("summary") or ""), hist
+        # 再跑一次（此时话题已没有会话 id）→ 不再重试，但仍要报错而不是静默
+        p._history.clear()
+        p.ctx.send.clear()
+        await p._run_and_report("测试：再干一次", STREAM, 0, {"user_id": UID})
+        joined2 = p.ctx.send.joined()
+        print("[第二次输出]", joined2[:200].replace("\n", " / "))
+        assert "执行失败" in joined2, f"静默失败：{joined2}"
+    finally:
+        p.config.dsh.command = orig_cmd
+        p.config.dsh.extra_args = orig_extra
 
     print("\n===== 全部通过 =====")
     srv.shutdown()

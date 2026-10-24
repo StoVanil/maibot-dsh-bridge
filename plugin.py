@@ -2169,6 +2169,12 @@ class DshBridgePlugin(MaiBotPlugin):
             if str(evt.get("type") or "") == "session" and evt.get("sessionId"):
                 state.session_id = str(evt["sessionId"])
                 break
+        # dsh 以 {"type":"error"} 直接退出（典型：会话被别的进程占用）时不会给 final，
+        # 不判失败的话用户就完全看不到任何输出——这里必须显式判失败。
+        if reason is None and not state.final_copy().strip():
+            err = self._state_error_text(state)
+            if err or int(proc.returncode or 0) != 0:
+                reason = "failed"
         self._current_pid = None
         self._cpu_prev.pop(proc.pid, None)
         self._run_state = None
@@ -2382,6 +2388,11 @@ class DshBridgePlugin(MaiBotPlugin):
     ) -> int:
         conf = self.config.dsh
         header = self._REASON_MSG.get(reason or "", "")
+        if reason == "failed":
+            # 把 dsh 的实际报错带出来（否则用户只看到"执行失败"四个字）
+            err = self._state_error_text(state).replace("\n", " ").strip()[:180]
+            if err:
+                header = f"❌ dsh 任务执行失败：{err}"
         final_text = state.final_copy().strip()
         # 默认静默：不发回执、不发转发，结果交给墨自己组织回复。
         # 只有任务里带 (all) 时才发完整过程；异常（失败/超时）仍提示一句，避免用户干等。
@@ -2777,19 +2788,35 @@ class DshBridgePlugin(MaiBotPlugin):
                 "话题 %s 任务结束（会话 %s）", self._topic_label(topic), (state.session_id or "-")[:28]
             )
         # 判定真实结果：文本里出现凭据/鉴权类错误时，不能算成功
-        if reason in (None, "") and self._looks_failed(state.final_copy()):
+        if reason in (None, "") and self._looks_failed(
+            state.final_copy() + " " + self._state_error_text(state)
+        ):
             reason = "failed"
-        # 会话被 Web GUI 占着（写句柄冲突）时给一句人话，否则用户只看到"执行失败"
-        if "active write handle" in state.final_copy().lower():
-            self.ctx.logger.warning("dsh 会话被 Web GUI 占用，无法续跑")
+        # 会话写锁冲突（dsh 会话被别的进程占用，多为 dsh Web GUI）：换一条新会话重跑一次，别让用户干等
+        err_now = self._state_error_text(state).lower()
+        if session_id and "active write handle" in err_now:
+            self.ctx.logger.warning("dsh 会话被占用（write handle），改用新会话重试一次")
             try:
                 await self.ctx.send.text(
-                    "🔒 这个话题的 dsh 会话正被 Web GUI 打开着，这边没法续跑；"
-                    "先在 Web GUI 里关掉这个话题的会话，再重新派活。",
+                    "🔒 旧会话正被 dsh Web GUI 占用，已改用新会话继续（不继承上文）；"
+                    "想接着用旧会话，先在 Web GUI 里关掉它再派活。",
                     stream_id,
                 )
             except Exception:  # noqa: BLE001
                 pass
+            if topic:
+                topic["session_id"] = ""
+                self._save_topics()
+            self._running = True
+            try:
+                reason, state = await self._execute(prompt, ws, timeout, session_id="")
+            except Exception as exc:  # noqa: BLE001
+                self.ctx.logger.error("换新会话重试失败: %s", exc, exc_info=True)
+                state = _RunState()
+                state.events.append({"type": "raw", "text": f"❌ 执行异常：{exc}"})
+                reason = "error"
+            finally:
+                self._running = False
         self._record_history(task, reason, state)
         self._current_task = ""
         # dsh 如果写了 ask-requests/*.json，就发问题、等回答、稍后续跑
@@ -2854,6 +2881,34 @@ class DshBridgePlugin(MaiBotPlugin):
             self.ctx.logger.warning("处理定时任务请求失败", exc_info=True)
 
     @staticmethod
+    def _state_error_text(state: "_RunState") -> str:
+        """从事件流里提取错误文本：优先 type=error 的 message，其次 stderr/raw 里像报错的行。"""
+        err = ""
+        raws: list[str] = []
+        for evt in state.events_copy():
+            kind = str(evt.get("type") or "")
+            if kind == "error":
+                msg = str(evt.get("message") or "").strip()
+                if msg:
+                    err = msg
+            elif kind == "raw":
+                line = str(evt.get("text") or "").strip()
+                if line:
+                    raws.append(line)
+        if err:
+            return err
+        for line in reversed(raws[-30:]):
+            low = line.lower()
+            if (
+                "error" in low
+                or "already owned" in low
+                or "failed" in low
+                or line.startswith("dsh:")
+            ):
+                return line
+        return ""
+
+    @staticmethod
     def _looks_failed(text: str) -> bool:
         """从 dsh 输出里识别"看起来成功、实际失败"的情况（主要是缺少凭据）。"""
         low = (text or "").lower()
@@ -2869,6 +2924,9 @@ class DshBridgePlugin(MaiBotPlugin):
 
     def _record_history(self, task: str, reason: Optional[str], state: "_RunState") -> None:
         final = state.final_copy().strip()
+        if not final and reason:
+            # 失败/异常时 dsh 往往没有 final：把错误文本记进摘要，便于 dsh_status 查看
+            final = self._state_error_text(state)[:200]
         ok = reason not in ("failed", "timeout", "stalled", "loop", "spawn-error", "stop")
         self._history.append(
             {
