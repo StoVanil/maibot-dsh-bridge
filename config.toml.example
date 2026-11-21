@@ -3,7 +3,7 @@
 
 [plugin]
 enabled = true
-config_version = "0.13.0"
+config_version = "0.14.1"
 
 [dsh]
 command = "dsh"                            # dsh 可执行命令（Windows 写 dsh.cmd 也可，带空格路径已支持）
@@ -31,8 +31,9 @@ salvage_on_fail = true                     # 任务被停/异常结束时把本�
 salvage_max_mb = 20
 silent_inject_chars = 6000                 # 静默模式回灌给墨的结果上限
 context_inject_chars = 600                 # 只回灌摘要时的上限
-direct_result = true                       # 结果直接发聊天（墨不一定接话，直发更稳）
-direct_result_chars = 1500                 # 直发超过这个长度就落成 .md 文件
+direct_result = true                       # 非实验模式：原输出也发回聊天（forward 进卡片 / text 截断到下一项）
+                                           # 实验模式下统一交给墨组织汇报，不看这一项
+direct_result_chars = 1500                 # text 模式下直发内容的上限
 allow_self_schedule = true                 # 允许 dsh 经 schedule-requests 自建定时任务（风险自负）
 api_key_env = "DEEPSEEK_API_KEY"
 api_key = ""                               # 明文 key；留空则用环境变量（勿提交/分享）
@@ -68,11 +69,13 @@ approval_hours = 24                        # 批准后有效期（小时）；0=
 approval_ttl_minutes = 30                  # 申请单有效期（分钟）
 
 [experimental]
-# v0.13.0 起不需要面板总开关：QQ 里 /dsh 实验开启 → /dsh 实验确认 <6位码> 即可，最长 24 小时。
-# agent_tools 只为兼容旧配置保留，填什么都不影响。
-agent_tools = true
-agent_tools_hours = 24
-agent_confirm_ttl_minutes = 10
+# v0.14.0 起默认常驻开启：墨随时可以自己建/切/改/删话题、派活，不再受 24 小时窗口限制。
+# 想临时收摊：QQ 里 /dsh 实验关闭；想恢复：/dsh 实验开启（常驻模式不用确认码）。
+# 关成 false 才退回旧的「/dsh 实验开启 → /dsh 实验确认 <6位码>」24 小时临时窗口。
+always_on = true
+agent_tools = true                         # 【已废弃】仅为兼容旧配置保留，填什么都不影响
+agent_tools_hours = 24                     # 旧版 24 小时窗口的单次时长（仅 always_on=false 时生效）
+agent_confirm_ttl_minutes = 10             # 二次确认码有效期（分钟），仅旧的临时窗口会用到
 
 [topic]
 enabled = true

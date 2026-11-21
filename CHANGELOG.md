@@ -1,3 +1,27 @@
+## v0.14.1 — MCP 脚本自愈 + present 文件柜交付 + 墨主动汇报
+
+- **MCP 脚本收进插件目录并自愈**：新增 `<插件目录>/scripts/{dsh_ask_mcp.py,dsh_files_mcp.py}` 作为原件；
+  `on_load()` 与每次任务开工前比对 `<MAIBOT_HOME>/scripts/`，缺失或内容不一致就原子写回（临时文件 + `os.replace` + chmod 755），
+  并检查 `$DSH_HOME/profiles/*/cordis.patch.yml` 仍引用 ask 脚本。宿主升级清空 `scripts/` 会在下次加载/开工时自动补回。
+- **present 支持文件柜**：`_deliverable_path_allowed()` 允许话题工作区与 `files/<owner QQ>/` 内的文件
+  （主人可跨 QQ 目录）；仍拒绝 `..`/符号链接逃逸、`index.json`、隐藏文件、`schedule-requests`；无 owner 上下文一律拒绝。
+  工作区 AGENTS.md 升到 v6（交付说明同步）。
+- **结果汇报补丁（同属 0.14.1 代码现状）**：结果回灌墨上下文后显式调用 `maisaka.proactive.trigger`，
+  让墨主动组织一轮汇报；`_manifest.json` 增加 `maisaka.proactive.trigger` 能力，SDK 兼容范围放宽到 `2.98.99`。
+- `_manifest.json` 与 `config_version` 均为 0.14.1。本条目对应 2026-11-21 从线上
+  `/opt/maibot/plugins/maibot-dsh-bridge/` 归档的代码（含 11-18 的 proactive 补丁与 11-20 的 manifest 更新）。
+
+## v0.14.0 — 实验模式常驻：墨自主调度
+
+- **实验模式改为常驻**（`experimental.always_on = true`）：默认开启，墨随时可以自己建/切/改/删话题、派活，
+  不再有 24 小时到期/二次确认的麻烦；`/dsh 实验关闭` 临时收摊、`/dsh 实验开启` 恢复（常驻模式不用确认码）。
+  只有把 `always_on` 设成 `false` 才退回旧的「实验开启 → 实验确认 <6位码>」24 小时窗口。
+- **结果交给墨组织**：实验模式下成功结果不再在聊天里铺原文、也不自动发 `.md` 转录，只回灌给墨；
+  用户要原输出/全过程时在任务末尾加 `(all)` 才发合并转发卡片。非实验模式仍按 `dsh.direct_result` 回传。
+- README 里描述的旧机制（dsh 自报时长、`allowed_prefixes`、自动上传 result 文件、`timeout` 默认 300/60/1800）
+  在 0.14.0 中已改掉或移除，行为以代码为准。
+- 帮助/文案同步为常驻语义；配置新增 `experimental.always_on`，`agent_tools` 标记为已废弃（仅兼容旧配置）。
+
 ## v0.13.0 — 文件柜（按 QQ 隔离）+ 分场景帮助 + 实验模式指令开启 + 审计修复
 
 **新功能**

@@ -7,8 +7,11 @@
 > **本仓库是 [ji-or-ji/maibot-dsh-bridge](https://github.com/ji-or-ji/maibot-dsh-bridge) 的派生版本（fork）。**
 > 上游 v0.6.1 提供基础桥接（派活 / 转发回传 / 定时任务 / 权限 / 交付物）；
 > 本 fork 在其上加了话题制会话、MCP 提问、`stop`/`peek`、不限时策略、异常救回、**按 QQ 号隔离的文件柜**、
-> **分场景帮助**、**文件管理 MCP 工具** 等，详见 [CHANGELOG.md](CHANGELOG.md)。
+> **分场景帮助**、**文件管理 MCP 工具**、**实验模式常驻（墨自主调度）**、**MCP 脚本自愈** 等，详见 [CHANGELOG.md](CHANGELOG.md)。
 > 原始版权归 ji-or-ji，遵循 MIT 许可（见 [LICENSE](LICENSE)）。
+>
+> ⚠️ `docs/` 下的长文档仍按 v0.13.0 校对；v0.14 起的行为变化（实验模式常驻、结果交给墨组织、MCP 脚本自愈等）
+> 以本 README、[CHANGELOG.md](CHANGELOG.md) 和 `plugin.py` 为准。
 
 ## 特性
 
@@ -21,9 +24,13 @@
 - **文件路由**：非实验模式下没带 `/dsh` 指令的文件交给**墨自己**读和回答；带了 `/dsh` 才进大肥鱼的工作流。
   实验模式下由墨决定（只有「文件 + 文字说明」才会触发决策）。
 - **分场景帮助**：`/dsh help 话题 | 文件 | 权限 | 实验 | 排障 | 全部`（也认数字 1–7）。
-- **交付与救回**：dsh 用 `present` 声明交付物 → 桥打包发 QQ；任务被停/异常终止时，本轮新产出的文件也会被「救回」发出。
+- **交付与救回**：dsh 用 `present` 声明交付物（话题工作区或**本人文件柜**里的文件都行）→ 桥打包发 QQ；任务被停/异常终止时，本轮新产出的文件也会被「救回」发出。
 - **Office 文档**：配合 dsh 的 `skill-office` 技能，读/写 Word、PPT、Excel（解释器路径可配置）。
-- **实验模式（指令即开）**：`/dsh 实验开启` → `/dsh 实验确认 <码>`，24 小时内墨可自主建/切话题、派活，到期自动关；不需要面板开关。
+- **实验模式（常驻，墨自主调度）**：默认常驻开启，墨可以自己建/切/改/删话题、派活，不再有 24 小时到期；
+  `/dsh 实验关闭` 临时收摊、`/dsh 实验开启` 恢复（常驻模式不用确认码）。任务结果默认交给墨组织后汇报，
+  要原输出/全过程时在任务末尾加 `(all)`。
+- **MCP 脚本自愈**：`<插件目录>/scripts/` 是原件；插件加载和每次开工前会与 `<MAIBOT_HOME>/scripts/` 比对，
+  缺失或内容不一致就补回（宿主机升级清空 `scripts/` 也不会再让 ask/files 工具静默失效）。
 
 ## 架构
 
@@ -64,8 +71,8 @@ QQ ──► MaiBot 宿主 ──► 本插件（桥）
 1. 把本仓库目录放进麦麦的 `plugins/`（目录名建议 `maibot-dsh-bridge`）。
 2. 复制 `config.toml.example` 为 `config.toml`，填 `workspace_dir`、QQ 白名单等。
 3. 服务器上装好 `dsh`（`npm i -g @deepseek-ai/dsh`）与 `DEEPSEEK_API_KEY`。
-4. 给 dsh 的 headless profile 加补丁（见 `profiles/headless.cordis.patch.yml`），并把
-   `scripts/dsh_ask_mcp.py`、`scripts/dsh_files_mcp.py` 放到 `<MAIBOT_HOME>/scripts/`。
+4. 给 dsh 的 headless profile 加补丁（见 `profiles/headless.cordis.patch.yml`）。桥会把 `<插件目录>/scripts/` 下的
+   两个 MCP 脚本自动同步到 `<MAIBOT_HOME>/scripts/`（v0.14.1 起；也可以先手动放一份）。
 5. 若要用 Office 技能，另建一个装了 `python-docx / python-pptx / openpyxl` 的 venv，
    把路径填进配置项 `dsh.office_python`（桥会写进工作区 AGENTS.md）。
 6. 重载麦麦。首次 `/dsh <任务>` 会自动建话题，文件柜目录 `files/<QQ>/` 会自动创建。
@@ -88,7 +95,7 @@ QQ ──► MaiBot 宿主 ──► 本插件（桥）
 | `/dsh restore #3` | 恢复归档话题 |
 | `/dsh files` | 文件柜：`rm <序号\|名字>` 删 / `send <序号\|名字>` 取回 / `mkdir <名>` 建目录 / `all`、`users`（主人） |
 | `/dsh 审批` / `批准` / `拒绝` / `撤销` | 权限审批（只有审批人能批，默认是白名单第一个人） |
-| `/dsh 实验开启` / `实验确认 <码>` / `实验状态` / `实验关闭` | 实验模式（墨自主调度，最长 24 小时） |
+| `/dsh 实验开启` / `实验状态` / `实验关闭`（`实验确认 <码>` 仅旧版 24h 窗口） | 实验模式（墨自主调度，默认常驻、不会到期） |
 | `/dsh help [话题\|文件\|权限\|实验\|排障\|全部]` | 分场景帮助（也认数字 1–7） |
 
 任务末尾加 `(all)` 可看完整合并转发过程；以 `-- ` 开头的正文强制当任务。
@@ -103,8 +110,11 @@ QQ ──► MaiBot 宿主 ──► 本插件（桥）
 - `dsh.dsh_home`：建议设成独立目录（如 `/root/.dsh-headless`），让桥与 dsh Web GUI 各用一套会话库；
   该目录里需要 `.credentials.yaml` 和 `profiles/headless/`。
 - `dsh.upload_url_hosts`：只允许从这些 QQ 文件域名直链下载附件（防 SSRF）；其它链接一律走 NapCat 取文件。
+- `dsh.direct_result`：非实验模式下把原输出也发回聊天（`display_mode=forward` 进合并转发卡片，
+  `text` 时截断到 `direct_result_chars`）；实验模式下结果一律交给墨组织汇报。
 - `permission.allowed_users`：白名单；留空且 `enabled=true` = 拒绝所有人（fail-closed）。
-- `experimental.agent_tools`：**已废弃**，现在只需 QQ 里两条指令即可开启实验模式。
+- `experimental.always_on`：实验模式是否常驻（默认 `true`，墨可自主调度且不会到期）；改成 `false`
+  退回旧的 24 小时临时窗口（需 `/dsh 实验开启` + 确认码）。`experimental.agent_tools` 已废弃，填什么都不影响。
 
 ## 安全边界（务必读）
 
@@ -128,10 +138,10 @@ QQ ──► MaiBot 宿主 ──► 本插件（桥）
 ├── profiles/headless.cordis.patch.yml # dsh headless profile 补丁示例
 ├── scripts/dsh_ask_mcp.py             # MCP stdio 服务：ask_user + 文件柜 files_* 工具（合并）
 ├── scripts/dsh_files_mcp.py           # 文件柜工具实现（被 ask server import；也可单独跑/单测）
-├── docs/使用说明书.md                  # 面向使用者的完整说明（含命令/FAQ/文件柜/权限审批）
-├── docs/实现方案.md                    # 设计取舍与实施记录
-├── docs/帮助文案.md                    # /dsh help 分场景文案（可直接嵌入）
-├── docs/文案全集.md                    # 用户可见文案全集（校对用）
+├── docs/使用说明书.md                  # 面向使用者的完整说明（v0.13 校对，待更新到 0.14）
+├── docs/实现方案.md                    # 设计取舍与实施记录（v0.13 校对，待更新到 0.14）
+├── docs/帮助文案.md                    # /dsh help 分场景文案（可直接嵌入；v0.13 校对，待更新）
+├── docs/文案全集.md                    # 用户可见文案全集（校对用；v0.13 校对，待更新）
 └── tests/bridge_harness.py            # 集成测试（假 Host + 真 dsh）
 ```
 
@@ -156,6 +166,8 @@ python -m unittest tests.test_files_mcp  # 若把测试一并拷入
 ## 已知限制
 
 - 全局串行：同一时刻只跑一个 dsh 任务，第二个进队列（`topic.queue_max` 控制队列长度）。
+- 实验模式常驻开启时 `/dsh help`、`/dsh files ...`、`/dsh list` 等命令会被收起（`/dsh stop`、`/dsh peek`、
+  `/dsh queue` 和实验开关仍可用）；要取文件 / 看话题可先 `/dsh 实验关闭`。
 - 会话写锁：同一话题的会话被 dsh Web GUI 打开时，桥无法续跑（会自动换新会话重试并提示）。
 - 文件上传/取回依赖 NapCat 系适配器；其它适配器只发文字、取不到 QQ 文件。
 - 无 psutil 时进程存活判断降级（Linux 走 `/proc`，其它平台只看进程是否还在）。

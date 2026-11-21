@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "ji-or-ji.maibot-dsh-bridge",
-  "version": "0.13.0",
+  "version": "0.14.1",
   "name": "麦麦×dsh 桥",
-  "description": "把 DeepSeek Harness (大肥鱼) 接入麦麦：话题制会话（/dsh 统一指令）、持久会话、独立工作区、大肥鱼 提问（MCP ask 工具，同一进程继续）、QQ 发文件按 QQ 号分目录（files/<QQ>/，带 /dsh files 文件柜管理与 dsh 侧 files MCP 工具）、present 交付文件回传、Office 文档技能、定时任务、分场景 /dsh help；实验模式：QQ 里 /dsh 实验开启 + 确认码即可让墨自主调度（最长 24h，无需面板开关）。",
+  "description": "把 DeepSeek Harness (大肥鱼) 接入麦麦：话题制会话（/dsh 统一指令）、持久会话、独立工作区、大肥鱼 提问（MCP ask 工具，同一进程继续）、QQ 发文件按 QQ 号分目录（files/<QQ>/，带 /dsh files 文件柜管理与 dsh 侧 files MCP 工具）、present 交付文件回传、Office 文档技能、定时任务、分场景 /dsh help；实验模式默认常驻开启（墨自主调度，不再 24h 到期），实验结果默认交给墨组织、原输出用合并转发卡片。",
   "author": {
     "name": "ji-or-ji",
     "url": "https://github.com/ji-or-ji"
@@ -21,7 +21,7 @@
   },
   "sdk": {
     "min_version": "2.0.0",
-    "max_version": "2.16.99"
+    "max_version": "2.98.99"
   },
   "dependencies": [],
   "capabilities": [
@@ -29,7 +29,8 @@
     "send.forward",
     "api.call",
     "api.get",
-    "maisaka.context.append"
+    "maisaka.context.append",
+    "maisaka.proactive.trigger"
   ],
   "i18n": {
     "default_locale": "zh-CN",
