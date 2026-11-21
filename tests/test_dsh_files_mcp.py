@@ -32,8 +32,11 @@ import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
+ROOT = os.path.dirname(HERE)
+SCRIPTS = os.path.join(ROOT, "scripts")
+for _p in (HERE, SCRIPTS):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import dsh_files_mcp as m  # noqa: E402
 
@@ -41,7 +44,7 @@ import dsh_files_mcp as m  # noqa: E402
 OWNER = "10001"
 OTHER = "10002"
 SUPER = "2953679189"
-SERVER_SCRIPT = os.path.join(HERE, "dsh_files_mcp.py")
+SERVER_SCRIPT = os.path.join(SCRIPTS, "dsh_files_mcp.py")
 
 
 # --------------------------------------------------------------------------
